@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { type Highlighter, createHighlighter } from "shiki";
+import { type Highlighter, type ThemedToken, createHighlighter } from "shiki";
 
 let highlighterPromise: Promise<Highlighter> | null = null;
 
@@ -33,6 +33,8 @@ function getHighlighter(): Promise<Highlighter> {
   }
   return highlighterPromise;
 }
+
+export type { ThemedToken };
 
 export function useHighlighter() {
   const [highlighter, setHighlighter] = useState<Highlighter | null>(null);

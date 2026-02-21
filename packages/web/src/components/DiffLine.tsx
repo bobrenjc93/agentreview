@@ -1,14 +1,16 @@
 "use client";
 
 import { type ParsedChange } from "@/lib/diff/parser";
+import { type ThemedToken } from "@/hooks/useHighlighter";
 
 interface DiffLineProps {
   change: ParsedChange;
   onClickLineNumber: (lineNumber: number, content: string) => void;
   highlighted?: boolean;
+  tokens?: ThemedToken[];
 }
 
-export function DiffLine({ change, onClickLineNumber, highlighted }: DiffLineProps) {
+export function DiffLine({ change, onClickLineNumber, highlighted, tokens }: DiffLineProps) {
   const isAdd = change.type === "add";
   const isDel = change.type === "del";
   const isNormal = change.type === "normal";
@@ -19,7 +21,7 @@ export function DiffLine({ change, onClickLineNumber, highlighted }: DiffLinePro
       ? "bg-red-950/40"
       : "";
 
-  const textClass = isAdd
+  const fallbackTextClass = isAdd
     ? "text-green-300"
     : isDel
       ? "text-red-300"
@@ -50,9 +52,15 @@ export function DiffLine({ change, onClickLineNumber, highlighted }: DiffLinePro
       >
         {newNum ?? ""}
       </button>
-      <span className={`w-4 text-center shrink-0 ${textClass}`}>{prefix}</span>
-      <span className={`flex-1 whitespace-pre overflow-x-auto px-2 ${textClass}`}>
-        {change.content}
+      <span className={`w-4 text-center shrink-0 ${fallbackTextClass}`}>{prefix}</span>
+      <span className="flex-1 whitespace-pre overflow-x-auto px-2">
+        {tokens ? (
+          tokens.map((token, i) => (
+            <span key={i} style={{ color: token.color }}>{token.content}</span>
+          ))
+        ) : (
+          <span className={fallbackTextClass}>{change.content}</span>
+        )}
       </span>
     </div>
   );

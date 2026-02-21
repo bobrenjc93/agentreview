@@ -1,12 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { type AgentReviewFile } from "@/lib/payload/types";
 import { parseDiffString } from "@/lib/diff/parser";
 import { DiffLine } from "./DiffLine";
 import { InlineCommentForm } from "./InlineCommentForm";
 import { InlineComment } from "./InlineComment";
 import { useComments } from "@/hooks/useComments";
+import { useHighlighter, type ThemedToken } from "@/hooks/useHighlighter";
+import { type BundledLanguage } from "shiki";
 
 interface DiffViewProps {
   file: AgentReviewFile;
@@ -18,9 +20,42 @@ export function DiffView({ file }: DiffViewProps) {
     content: string;
   } | null>(null);
   const { addComment, removeComment, getCommentsForLine } = useComments();
+  const highlighter = useHighlighter();
 
   const parsed = parseDiffString(file.diff);
   const chunks = parsed[0]?.chunks || [];
+
+  // Build a map of line content -> tokens for syntax highlighting
+  const tokenMap = useMemo(() => {
+    if (!highlighter || !file.language) return null;
+    const loadedLangs = highlighter.getLoadedLanguages();
+    if (!loadedLangs.includes(file.language)) return null;
+
+    // Collect all unique line contents from the diff
+    const lines: string[] = [];
+    for (const chunk of chunks) {
+      for (const change of chunk.changes) {
+        lines.push(change.content);
+      }
+    }
+
+    // Tokenize as a single block so Shiki can track multi-line state
+    const fullText = lines.join("\n");
+    const result = highlighter.codeToTokens(fullText, {
+      lang: file.language as BundledLanguage,
+      theme: "github-dark",
+    });
+
+    // result.tokens is an array of lines, each line is ThemedToken[]
+    const map = new Map<number, ThemedToken[]>();
+    result.tokens.forEach((lineTokens, i) => {
+      map.set(i, lineTokens);
+    });
+    return map;
+  }, [highlighter, file.language, file.diff, chunks]);
+
+  // Build a sequential index to look up tokens
+  let lineIdx = 0;
 
   function handleClickLine(lineNumber: number, content: string) {
     setCommentingLine({ lineNumber, content });
@@ -45,6 +80,9 @@ export function DiffView({ file }: DiffViewProps) {
             {chunk.content}
           </div>
           {chunk.changes.map((change, li) => {
+            const currentLineIdx = lineIdx++;
+            const tokens = tokenMap?.get(currentLineIdx) ?? undefined;
+
             const lineNum =
               change.type === "add" || change.type === "normal"
                 ? (change as { ln2?: number; ln?: number }).ln2 ??
@@ -63,6 +101,7 @@ export function DiffView({ file }: DiffViewProps) {
                   change={change}
                   onClickLineNumber={handleClickLine}
                   highlighted={lineComments.length > 0}
+                  tokens={tokens}
                 />
                 {lineComments.map((c) => (
                   <InlineComment
