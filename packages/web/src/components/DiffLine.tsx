@@ -1,0 +1,59 @@
+"use client";
+
+import { type ParsedChange } from "@/lib/diff/parser";
+
+interface DiffLineProps {
+  change: ParsedChange;
+  onClickLineNumber: (lineNumber: number, content: string) => void;
+  highlighted?: boolean;
+}
+
+export function DiffLine({ change, onClickLineNumber, highlighted }: DiffLineProps) {
+  const isAdd = change.type === "add";
+  const isDel = change.type === "del";
+  const isNormal = change.type === "normal";
+
+  const bgClass = isAdd
+    ? "bg-green-950/40"
+    : isDel
+      ? "bg-red-950/40"
+      : "";
+
+  const textClass = isAdd
+    ? "text-green-300"
+    : isDel
+      ? "text-red-300"
+      : "text-gray-300";
+
+  const prefix = isAdd ? "+" : isDel ? "-" : " ";
+
+  const oldNum = isDel || isNormal ? (change as { ln1?: number; ln?: number }).ln1 ?? (change as { ln?: number }).ln : undefined;
+  const newNum = isAdd || isNormal ? (change as { ln2?: number; ln?: number }).ln2 ?? (change as { ln?: number }).ln : undefined;
+
+  const clickableLineNum = newNum ?? oldNum ?? 0;
+
+  return (
+    <div
+      className={`flex font-mono text-xs leading-6 ${bgClass} ${highlighted ? "ring-1 ring-blue-500 ring-inset" : ""} group`}
+    >
+      <button
+        onClick={() => onClickLineNumber(clickableLineNum, change.content)}
+        className="w-10 text-right text-gray-600 hover:text-blue-400 hover:bg-gray-800 px-1 select-none shrink-0 cursor-pointer"
+        title="Add comment"
+      >
+        {oldNum ?? ""}
+      </button>
+      <button
+        onClick={() => onClickLineNumber(clickableLineNum, change.content)}
+        className="w-10 text-right text-gray-600 hover:text-blue-400 hover:bg-gray-800 px-1 select-none shrink-0 cursor-pointer"
+        title="Add comment"
+      >
+        {newNum ?? ""}
+      </button>
+      <span className={`w-4 text-center shrink-0 ${textClass}`}>{prefix}</span>
+      <span className={`flex-1 whitespace-pre overflow-x-auto px-2 ${textClass}`}>
+        {change.content}
+      </span>
+    </div>
+  );
+}

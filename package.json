@@ -1,0 +1,12 @@
+{
+  "name": "agentreview",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --filter @agentreview/web dev",
+    "build": "pnpm --filter @agentreview/web build",
+    "build:web": "pnpm --filter @agentreview/web build"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
