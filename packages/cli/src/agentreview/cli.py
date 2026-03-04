@@ -16,7 +16,10 @@ from .payload.types import AgentReviewPayload
 @click.option("--branch", "base_branch", default=None, metavar="BASE",
               help="Compare current branch against BASE (default: main)")
 def main(staged: bool, base_branch: str | None) -> None:
-    """Generate an LLM-friendly code review payload from git diffs."""
+    """Generate an LLM-friendly code review payload from git diffs.
+
+    Default mode includes staged, unstaged, and untracked file changes.
+    """
     if base_branch is not None:
         diff_mode = "branch"
         base = base_branch or "main"
