@@ -4,6 +4,10 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "AgentReview",
   description: "LLM-friendly code review tool",
+  icons: {
+    icon: [{ url: "/favicon.svg", type: "image/svg+xml" }],
+    shortcut: ["/favicon.svg"],
+  },
 };
 
 export default function RootLayout({
