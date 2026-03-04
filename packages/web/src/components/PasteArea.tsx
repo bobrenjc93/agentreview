@@ -19,8 +19,10 @@ export function PasteArea() {
         setError(validation.error!);
         return;
       }
+      const reviewSessionId = crypto.randomUUID();
       // Store in sessionStorage for the review page to pick up
       sessionStorage.setItem("agentreview:payload", JSON.stringify(payload));
+      sessionStorage.setItem("agentreview:sessionId", reviewSessionId);
       router.push("/review");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to decode payload");

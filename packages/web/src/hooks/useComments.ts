@@ -15,16 +15,19 @@ interface CommentsContextValue {
 
 export const CommentsContext = createContext<CommentsContextValue | null>(null);
 
-export function useCommentsProvider() {
+export function useCommentsProvider(sessionId: string) {
   const [comments, setComments] = useState<ReviewComment[]>([]);
+  const [loadedSessionId, setLoadedSessionId] = useState<string | null>(null);
 
   useEffect(() => {
-    setComments(loadComments());
-  }, []);
+    setComments(loadComments(sessionId));
+    setLoadedSessionId(sessionId);
+  }, [sessionId]);
 
   useEffect(() => {
-    saveComments(comments);
-  }, [comments]);
+    if (loadedSessionId !== sessionId) return;
+    saveComments(sessionId, comments);
+  }, [sessionId, comments, loadedSessionId]);
 
   const addComment = useCallback(
     (comment: Omit<ReviewComment, "id" | "createdAt">) => {
@@ -44,8 +47,8 @@ export function useCommentsProvider() {
 
   const clearAll = useCallback(() => {
     setComments([]);
-    clearStorage();
-  }, []);
+    clearStorage(sessionId);
+  }, [sessionId]);
 
   const getCommentsForFile = useCallback(
     (filePath: string) => comments.filter((c) => c.filePath === filePath),

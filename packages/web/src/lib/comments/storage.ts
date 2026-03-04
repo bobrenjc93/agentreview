@@ -1,23 +1,30 @@
 import { type ReviewComment } from "./types";
 
-const STORAGE_KEY = "agentreview:comments";
+const STORAGE_KEY_PREFIX = "agentreview:comments";
 
-export function loadComments(): ReviewComment[] {
+function getStorageKey(sessionId: string): string {
+  return `${STORAGE_KEY_PREFIX}:${sessionId}`;
+}
+
+export function loadComments(sessionId: string): ReviewComment[] {
   if (typeof window === "undefined") return [];
+  if (!sessionId) return [];
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(getStorageKey(sessionId));
     return raw ? JSON.parse(raw) : [];
   } catch {
     return [];
   }
 }
 
-export function saveComments(comments: ReviewComment[]): void {
+export function saveComments(sessionId: string, comments: ReviewComment[]): void {
   if (typeof window === "undefined") return;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(comments));
+  if (!sessionId) return;
+  localStorage.setItem(getStorageKey(sessionId), JSON.stringify(comments));
 }
 
-export function clearComments(): void {
+export function clearComments(sessionId: string): void {
   if (typeof window === "undefined") return;
-  localStorage.removeItem(STORAGE_KEY);
+  if (!sessionId) return;
+  localStorage.removeItem(getStorageKey(sessionId));
 }

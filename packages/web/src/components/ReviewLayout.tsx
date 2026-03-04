@@ -11,6 +11,7 @@ import { type AgentReviewFile } from "@/lib/payload/types";
 
 interface ReviewLayoutProps {
   payload: AgentReviewPayload;
+  sessionId: string;
 }
 
 const STATUS_COLORS: Record<AgentReviewFile["status"], string> = {
@@ -27,13 +28,13 @@ const STATUS_LABELS: Record<AgentReviewFile["status"], string> = {
   renamed: "R",
 };
 
-export function ReviewLayout({ payload }: ReviewLayoutProps) {
+export function ReviewLayout({ payload, sessionId }: ReviewLayoutProps) {
   const [expandedFiles, setExpandedFiles] = useState<Set<string>>(
     () => new Set(payload.files.map((f) => f.path))
   );
   const [fullFileMode, setFullFileMode] = useState<Set<string>>(new Set());
   const [exportOpen, setExportOpen] = useState(false);
-  const commentsValue = useCommentsProvider();
+  const commentsValue = useCommentsProvider(sessionId);
 
   const toggleFile = useCallback((path: string) => {
     setExpandedFiles((prev) => {

@@ -7,17 +7,20 @@ import { ReviewLayout } from "@/components/ReviewLayout";
 
 export default function ReviewPage() {
   const [payload, setPayload] = useState<AgentReviewPayload | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     try {
       const raw = sessionStorage.getItem("agentreview:payload");
-      if (!raw) {
+      const currentSessionId = sessionStorage.getItem("agentreview:sessionId");
+      if (!raw || !currentSessionId) {
         setError("No payload found. Please go back and paste one.");
         return;
       }
       const data = JSON.parse(raw);
       setPayload(asPayload(data));
+      setSessionId(currentSessionId);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load payload");
     }
@@ -36,7 +39,7 @@ export default function ReviewPage() {
     );
   }
 
-  if (!payload) {
+  if (!payload || !sessionId) {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <p className="text-gray-400">Loading...</p>
@@ -44,5 +47,5 @@ export default function ReviewPage() {
     );
   }
 
-  return <ReviewLayout payload={payload} />;
+  return <ReviewLayout payload={payload} sessionId={sessionId} />;
 }
