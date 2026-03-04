@@ -239,44 +239,45 @@ export function CodeBlock({ code, language }: CodeBlockProps) {
 
   const renderedRows: JSX.Element[] = [];
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
-    const range = foldRangeByStart.get(lineIndex);
-    const isCollapsed = !!range && collapsedStarts.has(lineIndex);
-    const tokens = tokenLines?.[lineIndex];
-    const line = lines[lineIndex];
+    const rowIndex = lineIndex;
+    const range = foldRangeByStart.get(rowIndex);
+    const isCollapsed = !!range && collapsedStarts.has(rowIndex);
+    const tokens = tokenLines?.[rowIndex];
+    const line = lines[rowIndex];
 
     renderedRows.push(
-      <div key={`line-${lineIndex}`} className="flex font-mono text-xs leading-6">
+      <div key={`line-${rowIndex}`} className="flex font-mono text-xs leading-6">
         <button
           type="button"
-          onClick={() => range && toggleFold(lineIndex)}
+          onClick={() => range && toggleFold(rowIndex)}
           className={`w-6 shrink-0 select-none ${
             range ? "text-gray-500 hover:text-blue-400" : "text-gray-800 cursor-default"
           }`}
           title={
             range
               ? isCollapsed
-                ? `Expand folded block at line ${lineIndex + 1}`
-                : `Fold block starting at line ${lineIndex + 1}`
+                ? `Expand folded block at line ${rowIndex + 1}`
+                : `Fold block starting at line ${rowIndex + 1}`
               : undefined
           }
           aria-label={
             range
               ? isCollapsed
-                ? `Expand folded block at line ${lineIndex + 1}`
-                : `Fold block starting at line ${lineIndex + 1}`
+                ? `Expand folded block at line ${rowIndex + 1}`
+                : `Fold block starting at line ${rowIndex + 1}`
               : undefined
           }
         >
           {range ? (isCollapsed ? "▶" : "▼") : ""}
         </button>
         <span className="w-12 shrink-0 pr-2 text-right text-gray-600 select-none border-r border-gray-800">
-          {lineIndex + 1}
+          {rowIndex + 1}
         </span>
         <code className="flex-1 pl-3 pr-4 text-gray-300 whitespace-pre">
           {tokens
             ? tokens.map((token, tokenIndex) => (
                 <span
-                  key={`${lineIndex}-${tokenIndex}`}
+                  key={`${rowIndex}-${tokenIndex}`}
                   style={token.color ? { color: token.color } : undefined}
                 >
                   {token.content}
@@ -290,10 +291,10 @@ export function CodeBlock({ code, language }: CodeBlockProps) {
     );
 
     if (range && isCollapsed) {
-      const foldedLineCount = range.end - lineIndex;
+      const foldedLineCount = range.end - rowIndex;
       renderedRows.push(
         <div
-          key={`fold-${lineIndex}`}
+          key={`fold-${rowIndex}`}
           className="flex items-center font-mono text-xs leading-6 bg-gray-950/40 text-gray-400"
         >
           <span className="w-6 shrink-0" />
@@ -302,7 +303,7 @@ export function CodeBlock({ code, language }: CodeBlockProps) {
           </span>
           <button
             type="button"
-            onClick={() => toggleFold(lineIndex)}
+            onClick={() => toggleFold(rowIndex)}
             className="pl-3 pr-4 text-left hover:text-blue-300"
           >
             ... {foldedLineCount} line{foldedLineCount === 1 ? "" : "s"} folded

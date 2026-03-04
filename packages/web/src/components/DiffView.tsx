@@ -345,15 +345,17 @@ export function DiffView({ file }: DiffViewProps) {
               {(() => {
                 const rows: JSX.Element[] = [];
                 for (let li = 0; li < chunk.changes.length; li++) {
-                  const preparedChange = chunk.changes[li];
+                  const rowIndex = li;
+                  const preparedChange = chunk.changes[rowIndex];
                   const change = preparedChange.change;
                   const tokens =
                     tokenMap?.get(preparedChange.tokenIndex) ?? undefined;
                   const lineContent = preparedChange.content;
-                  const foldRange = chunk.foldRangeByStart.get(li);
+                  const foldRange = chunk.foldRangeByStart.get(rowIndex);
+                  const foldKeyValue = foldKey(ci, rowIndex);
                   const isFolded =
                     !!foldRange &&
-                    collapsedFolds.has(foldKey(ci, li));
+                    collapsedFolds.has(foldKeyValue);
 
                   const lineNum =
                     change.type === "add" || change.type === "normal"
@@ -367,7 +369,7 @@ export function DiffView({ file }: DiffViewProps) {
                   const isCommenting = commentingLine?.lineNumber === lineNum;
 
                   rows.push(
-                    <div key={`${ci}-${li}`}>
+                    <div key={`${ci}-${rowIndex}`}>
                       <DiffLine
                         change={change}
                         content={lineContent}
@@ -378,7 +380,7 @@ export function DiffView({ file }: DiffViewProps) {
                         folded={isFolded}
                         onToggleFold={
                           foldRange
-                            ? () => toggleFold(ci, li)
+                            ? () => toggleFold(ci, rowIndex)
                             : undefined
                         }
                       />
@@ -399,10 +401,10 @@ export function DiffView({ file }: DiffViewProps) {
                   );
 
                   if (foldRange && isFolded) {
-                    const hiddenLineCount = foldRange.end - li;
+                    const hiddenLineCount = foldRange.end - rowIndex;
                     rows.push(
                       <div
-                        key={`folded-${ci}-${li}`}
+                        key={`folded-${ci}-${rowIndex}`}
                         className="flex items-center font-mono text-xs leading-6 bg-gray-950/40 text-gray-400"
                       >
                         <span className="w-6 shrink-0" />
@@ -411,7 +413,7 @@ export function DiffView({ file }: DiffViewProps) {
                         <span className="w-4 text-center shrink-0">…</span>
                         <button
                           type="button"
-                          onClick={() => toggleFold(ci, li)}
+                          onClick={() => toggleFold(ci, rowIndex)}
                           className="flex-1 px-2 text-left hover:text-blue-300"
                         >
                           ... {hiddenLineCount} line
