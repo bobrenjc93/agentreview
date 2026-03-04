@@ -6,7 +6,6 @@ import { type AgentReviewPayload } from "@/lib/payload/types";
 import { PayloadContext } from "@/hooks/usePayload";
 import { CommentsContext, useCommentsProvider } from "@/hooks/useComments";
 import { DiffView } from "./DiffView";
-import { FullFileView } from "./FullFileView";
 import { ExportModal } from "./ExportModal";
 import { ExportDiffModal } from "./ExportDiffModal";
 import { type AgentReviewFile } from "@/lib/payload/types";
@@ -35,7 +34,7 @@ const HOTKEYS: Array<{ key: string; description: string }> = [
   { key: "E", description: "Expand or collapse all files" },
   { key: "D", description: "Open Export Diff" },
   { key: "C", description: "Open Export Comments (when comments exist)" },
-  { key: "F2", description: "Go to home and paste a new payload" },
+  { key: "A", description: "Go to home and paste a new payload" },
   { key: "Esc", description: "Close any open modal" },
 ];
 
@@ -44,7 +43,6 @@ export function ReviewLayout({ payload, sessionId }: ReviewLayoutProps) {
   const [expandedFiles, setExpandedFiles] = useState<Set<string>>(
     () => new Set(payload.files.map((f) => f.path))
   );
-  const [fullFileMode, setFullFileMode] = useState<Set<string>>(new Set());
   const [exportOpen, setExportOpen] = useState(false);
   const [exportDiffOpen, setExportDiffOpen] = useState(false);
   const [hotkeysOpen, setHotkeysOpen] = useState(false);
@@ -69,18 +67,6 @@ export function ReviewLayout({ payload, sessionId }: ReviewLayoutProps) {
 
   const collapseAll = useCallback(() => {
     setExpandedFiles(new Set());
-  }, []);
-
-  const toggleFullFile = useCallback((path: string) => {
-    setFullFileMode((prev) => {
-      const next = new Set(prev);
-      if (next.has(path)) {
-        next.delete(path);
-      } else {
-        next.add(path);
-      }
-      return next;
-    });
   }, []);
 
   const allExpanded = expandedFiles.size === payload.files.length;
@@ -135,12 +121,6 @@ export function ReviewLayout({ payload, sessionId }: ReviewLayoutProps) {
 
       if (hasOpenModal) return;
 
-      if (event.key === "F2") {
-        event.preventDefault();
-        router.push("/");
-        return;
-      }
-
       switch (event.key.toLowerCase()) {
         case "e":
           event.preventDefault();
@@ -158,6 +138,10 @@ export function ReviewLayout({ payload, sessionId }: ReviewLayoutProps) {
           if (commentsCount === 0) return;
           event.preventDefault();
           setExportOpen(true);
+          break;
+        case "a":
+          event.preventDefault();
+          router.push("/");
           break;
         default:
           break;
@@ -227,7 +211,6 @@ export function ReviewLayout({ payload, sessionId }: ReviewLayoutProps) {
             <div className="max-w-5xl mx-auto py-4 px-4 flex flex-col gap-3">
               {payload.files.map((file) => {
                 const isExpanded = expandedFiles.has(file.path);
-                const isFullFile = fullFileMode.has(file.path);
                 const commentCount = commentsValue.getCommentsForFile(file.path).length;
 
                 return (
@@ -259,28 +242,7 @@ export function ReviewLayout({ payload, sessionId }: ReviewLayoutProps) {
                     {/* Expanded content */}
                     {isExpanded && (
                       <div className="border-t border-gray-700">
-                        {file.source && (
-                          <div className="flex justify-end px-4 py-1 bg-gray-850">
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                toggleFullFile(file.path);
-                              }}
-                              className="text-xs text-gray-400 hover:text-blue-400 transition-colors"
-                            >
-                              {isFullFile ? "Hide full file" : "Show full file"}
-                            </button>
-                          </div>
-                        )}
                         <DiffView file={file} />
-                        {isFullFile && (
-                          <div className="border-t border-gray-700 bg-gray-950/30">
-                            <div className="px-4 py-2 text-xs uppercase tracking-wide text-gray-400 border-b border-gray-800">
-                              Full file
-                            </div>
-                            <FullFileView file={file} />
-                          </div>
-                        )}
                       </div>
                     )}
                   </div>

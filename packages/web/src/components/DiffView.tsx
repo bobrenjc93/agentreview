@@ -19,6 +19,11 @@ interface FoldRange {
   end: number;
 }
 
+interface ChunkLineRange {
+  start: number;
+  end: number;
+}
+
 interface PreparedChange {
   change: ParsedChange;
   content: string;
@@ -41,6 +46,8 @@ const CLOSE_TO_OPEN: Record<CloseBracket, OpenBracket> = {
   "]": "[",
   ")": "(",
 };
+
+const CONTEXT_EXPAND_STEP = 20;
 
 function stripDiffPrefix(content: string): string {
   const marker = content[0];
@@ -197,12 +204,46 @@ function foldKey(chunkIndex: number, start: number): string {
   return `${chunkIndex}:${start}`;
 }
 
+function getChangeNewLineNumber(change: ParsedChange): number | null {
+  if (change.type !== "add" && change.type !== "normal") return null;
+  const lineNumber =
+    (change as { ln2?: number; ln?: number }).ln2 ??
+    (change as { ln?: number }).ln;
+  if (typeof lineNumber !== "number" || lineNumber <= 0) {
+    return null;
+  }
+  return lineNumber;
+}
+
+function buildChunkLineRanges(chunks: PreparedChunk[]): Array<ChunkLineRange | null> {
+  return chunks.map((chunk) => {
+    let start = Number.POSITIVE_INFINITY;
+    let end = Number.NEGATIVE_INFINITY;
+
+    for (const preparedChange of chunk.changes) {
+      const lineNumber = getChangeNewLineNumber(preparedChange.change);
+      if (lineNumber == null) continue;
+      if (lineNumber < start) start = lineNumber;
+      if (lineNumber > end) end = lineNumber;
+    }
+
+    if (!Number.isFinite(start) || !Number.isFinite(end)) {
+      return null;
+    }
+
+    return { start, end };
+  });
+}
+
 export function DiffView({ file }: DiffViewProps) {
   const [commentingLine, setCommentingLine] = useState<{
     lineNumber: number;
     content: string;
   } | null>(null);
   const [collapsedFolds, setCollapsedFolds] = useState<Set<string>>(new Set());
+  const [expandedContextByGap, setExpandedContextByGap] = useState<
+    Record<number, { up: number; down: number }>
+  >({});
   const { addComment, removeComment, getCommentsForLine } = useComments();
   const highlighter = useHighlighter();
 
@@ -235,18 +276,9 @@ export function DiffView({ file }: DiffViewProps) {
     setCollapsedFolds(new Set());
   }, [file.diff, file.path]);
 
-  const allFoldKeys = useMemo(
-    () =>
-      preparedChunks.flatMap((chunk, chunkIndex) =>
-        chunk.foldStarts.map((start) => foldKey(chunkIndex, start))
-      ),
-    [preparedChunks]
-  );
-
-  const hasFoldRanges = allFoldKeys.length > 0;
-  const allCollapsed =
-    hasFoldRanges && allFoldKeys.every((key) => collapsedFolds.has(key));
-  const anyCollapsed = collapsedFolds.size > 0;
+  useEffect(() => {
+    setExpandedContextByGap({});
+  }, [file.diff, file.path, file.source]);
 
   const toggleFold = useCallback((chunkIndex: number, start: number) => {
     const key = foldKey(chunkIndex, start);
@@ -261,13 +293,74 @@ export function DiffView({ file }: DiffViewProps) {
     });
   }, []);
 
-  const collapseAll = useCallback(() => {
-    setCollapsedFolds(new Set(allFoldKeys));
-  }, [allFoldKeys]);
+  const sourceLines = useMemo(
+    () => (file.source ? file.source.split("\n") : []),
+    [file.source]
+  );
 
-  const expandAll = useCallback(() => {
-    setCollapsedFolds(new Set());
-  }, []);
+  const chunkLineRanges = useMemo(
+    () => buildChunkLineRanges(preparedChunks),
+    [preparedChunks]
+  );
+
+  const canRenderContextGaps = useMemo(
+    () =>
+      sourceLines.length > 0 &&
+      chunkLineRanges.length > 0 &&
+      chunkLineRanges.every((range) => range !== null),
+    [sourceLines.length, chunkLineRanges]
+  );
+
+  const resolvedChunkRanges = useMemo(
+    () => (canRenderContextGaps ? (chunkLineRanges as ChunkLineRange[]) : []),
+    [canRenderContextGaps, chunkLineRanges]
+  );
+
+  const getGapBounds = useCallback(
+    (gapIndex: number): ChunkLineRange | null => {
+      if (!canRenderContextGaps) return null;
+
+      if (gapIndex < 0 || gapIndex > resolvedChunkRanges.length) {
+        return null;
+      }
+
+      let start = 1;
+      let end = sourceLines.length;
+
+      if (gapIndex === 0) {
+        end = resolvedChunkRanges[0].start - 1;
+      } else if (gapIndex === resolvedChunkRanges.length) {
+        start = resolvedChunkRanges[resolvedChunkRanges.length - 1].end + 1;
+      } else {
+        start = resolvedChunkRanges[gapIndex - 1].end + 1;
+        end = resolvedChunkRanges[gapIndex].start - 1;
+      }
+
+      if (start > end) return null;
+      return { start, end };
+    },
+    [canRenderContextGaps, resolvedChunkRanges, sourceLines.length]
+  );
+
+  const expandGapContext = useCallback(
+    (gapIndex: number, direction: "up" | "down") => {
+      setExpandedContextByGap((prev) => {
+        const current = prev[gapIndex] ?? { up: 0, down: 0 };
+        const next = {
+          up:
+            direction === "up"
+              ? current.up + CONTEXT_EXPAND_STEP
+              : current.up,
+          down:
+            direction === "down"
+              ? current.down + CONTEXT_EXPAND_STEP
+              : current.down,
+        };
+        return { ...prev, [gapIndex]: next };
+      });
+    },
+    []
+  );
 
   // Build a map of line content -> tokens for syntax highlighting
   const tokenMap = useMemo(() => {
@@ -313,32 +406,98 @@ export function DiffView({ file }: DiffViewProps) {
     setCommentingLine(null);
   }
 
+  function renderContextLine(
+    gapIndex: number,
+    lineNumber: number
+  ): JSX.Element {
+    const content = sourceLines[lineNumber - 1] ?? "";
+    return (
+      <div
+        key={`gap-${gapIndex}-line-${lineNumber}`}
+        className="flex font-mono text-xs leading-6 bg-gray-950/20"
+      >
+        <span className="w-6 shrink-0" />
+        <span className="w-10 shrink-0 px-1 text-right text-gray-700" />
+        <span className="w-10 shrink-0 px-1 text-right text-gray-600">
+          {lineNumber}
+        </span>
+        <span className="w-4 shrink-0 text-center text-gray-700"> </span>
+        <span className="flex-1 whitespace-pre px-2 text-gray-500">
+          {content.length > 0 ? content : "\u00A0"}
+        </span>
+      </div>
+    );
+  }
+
+  function renderContextGap(gapIndex: number): JSX.Element | null {
+    const bounds = getGapBounds(gapIndex);
+    if (!bounds) return null;
+
+    const totalHiddenLines = bounds.end - bounds.start + 1;
+    if (totalHiddenLines <= 0) return null;
+
+    const expanded = expandedContextByGap[gapIndex] ?? { up: 0, down: 0 };
+    const downVisible = Math.min(expanded.down, totalHiddenLines);
+    const upVisible = Math.min(expanded.up, totalHiddenLines - downVisible);
+    const remainingHidden = totalHiddenLines - downVisible - upVisible;
+
+    const rows: JSX.Element[] = [];
+
+    for (let ln = bounds.start; ln < bounds.start + downVisible; ln++) {
+      rows.push(renderContextLine(gapIndex, ln));
+    }
+
+    if (remainingHidden > 0) {
+      rows.push(
+        <div
+          key={`gap-${gapIndex}-controls`}
+          className="flex items-center font-mono text-xs leading-6 bg-gray-900 border-y border-gray-800"
+        >
+          <span className="w-6 shrink-0" />
+          <span className="w-10 shrink-0" />
+          <span className="w-10 shrink-0" />
+          <span className="w-4 shrink-0 text-center text-gray-600">…</span>
+          <div className="flex items-center gap-2 px-2 py-1">
+            <button
+              type="button"
+              onClick={() => expandGapContext(gapIndex, "down")}
+              className="rounded border border-gray-700 px-1.5 text-[11px] text-gray-300 hover:border-gray-500 hover:text-white"
+            >
+              ↓
+            </button>
+            <button
+              type="button"
+              onClick={() => expandGapContext(gapIndex, "up")}
+              className="rounded border border-gray-700 px-1.5 text-[11px] text-gray-300 hover:border-gray-500 hover:text-white"
+            >
+              ↑
+            </button>
+            <span className="text-[11px] text-gray-500">
+              {remainingHidden} hidden line{remainingHidden === 1 ? "" : "s"}
+            </span>
+          </div>
+        </div>
+      );
+    }
+
+    for (let ln = bounds.end - upVisible + 1; ln <= bounds.end; ln++) {
+      rows.push(renderContextLine(gapIndex, ln));
+    }
+
+    return (
+      <div key={`gap-${gapIndex}`} className="border-b border-gray-800/60">
+        {rows}
+      </div>
+    );
+  }
+
   return (
     <div className="border border-gray-700 rounded-lg overflow-hidden">
       <div className="overflow-x-auto">
         <div className="min-w-full">
-          {hasFoldRanges && (
-            <div className="flex items-center justify-end gap-2 px-3 py-2 border-b border-gray-700 bg-gray-900">
-              <button
-                type="button"
-                onClick={collapseAll}
-                disabled={allCollapsed}
-                className="px-2.5 py-1 text-xs border border-gray-700 rounded text-gray-300 hover:text-white hover:border-gray-500 disabled:text-gray-600 disabled:border-gray-800 transition-colors"
-              >
-                Collapse code
-              </button>
-              <button
-                type="button"
-                onClick={expandAll}
-                disabled={!anyCollapsed}
-                className="px-2.5 py-1 text-xs border border-gray-700 rounded text-gray-300 hover:text-white hover:border-gray-500 disabled:text-gray-600 disabled:border-gray-800 transition-colors"
-              >
-                Expand code
-              </button>
-            </div>
-          )}
           {preparedChunks.map((chunk, ci) => (
             <div key={ci}>
+              {renderContextGap(ci)}
               <div className="bg-gray-800 text-gray-400 text-xs font-mono px-4 py-1 border-b border-gray-700">
                 {chunk.content}
               </div>
@@ -428,6 +587,7 @@ export function DiffView({ file }: DiffViewProps) {
               })()}
             </div>
           ))}
+          {renderContextGap(preparedChunks.length)}
           {preparedChunks.length === 0 && (
             <div className="p-4 text-gray-500 text-sm">No diff hunks to display</div>
           )}
