@@ -28,7 +28,9 @@ const STATUS_LABELS: Record<AgentReviewFile["status"], string> = {
 };
 
 export function ReviewLayout({ payload }: ReviewLayoutProps) {
-  const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set());
+  const [expandedFiles, setExpandedFiles] = useState<Set<string>>(
+    () => new Set(payload.files.map((f) => f.path))
+  );
   const [fullFileMode, setFullFileMode] = useState<Set<string>>(new Set());
   const [exportOpen, setExportOpen] = useState(false);
   const commentsValue = useCommentsProvider();
