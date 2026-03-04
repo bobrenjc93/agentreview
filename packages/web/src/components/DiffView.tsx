@@ -492,7 +492,7 @@ export function DiffView({ file }: DiffViewProps) {
   }
 
   return (
-    <div className="border border-gray-700 rounded-lg overflow-hidden">
+    <div className="border border-gray-700 overflow-hidden">
       <div className="overflow-x-auto">
         <div className="min-w-full">
           {preparedChunks.map((chunk, ci) => (

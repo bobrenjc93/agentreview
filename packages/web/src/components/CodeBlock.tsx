@@ -198,7 +198,7 @@ export function CodeBlock({ code, language }: CodeBlockProps) {
 
   if (!highlighter) {
     return (
-      <div className="bg-gray-900 p-4 rounded overflow-x-auto">
+      <div className="bg-gray-900 p-4 overflow-x-auto">
         <pre className="text-sm text-gray-300 font-mono whitespace-pre">{code}</pre>
       </div>
     );
@@ -315,7 +315,7 @@ export function CodeBlock({ code, language }: CodeBlockProps) {
   }
 
   return (
-    <div className="overflow-auto rounded bg-gray-900">
+    <div className="overflow-auto bg-gray-900">
       {hasFoldRanges && (
         <div className="flex items-center justify-end gap-2 px-3 py-2 border-b border-gray-800 bg-gray-900">
           <button

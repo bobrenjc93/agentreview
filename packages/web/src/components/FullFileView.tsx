@@ -17,7 +17,7 @@ export function FullFileView({ file }: FullFileViewProps) {
   }
 
   return (
-    <div className="border border-gray-700 rounded-lg overflow-hidden">
+    <div className="border border-gray-700 overflow-hidden">
       <CodeBlock code={file.source} language={file.language} />
     </div>
   );
