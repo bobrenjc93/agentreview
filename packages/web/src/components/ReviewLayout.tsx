@@ -35,7 +35,7 @@ const HOTKEYS: Array<{ key: string; description: string }> = [
   { key: "E", description: "Expand or collapse all files" },
   { key: "D", description: "Open Export Diff" },
   { key: "C", description: "Open Export Comments (when comments exist)" },
-  { key: "N", description: "Go to home and paste a new payload" },
+  { key: "F2", description: "Go to home and paste a new payload" },
   { key: "Esc", description: "Close any open modal" },
 ];
 
@@ -135,6 +135,12 @@ export function ReviewLayout({ payload, sessionId }: ReviewLayoutProps) {
 
       if (hasOpenModal) return;
 
+      if (event.key === "F2") {
+        event.preventDefault();
+        router.push("/");
+        return;
+      }
+
       switch (event.key.toLowerCase()) {
         case "e":
           event.preventDefault();
@@ -152,10 +158,6 @@ export function ReviewLayout({ payload, sessionId }: ReviewLayoutProps) {
           if (commentsCount === 0) return;
           event.preventDefault();
           setExportOpen(true);
-          break;
-        case "n":
-          event.preventDefault();
-          router.push("/");
           break;
         default:
           break;
