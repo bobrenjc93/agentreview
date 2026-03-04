@@ -53,7 +53,7 @@ export function DiffLine({ change, onClickLineNumber, highlighted, tokens }: Dif
         {newNum ?? ""}
       </button>
       <span className={`w-4 text-center shrink-0 ${fallbackTextClass}`}>{prefix}</span>
-      <span className="flex-1 whitespace-pre overflow-x-auto px-2">
+      <span className="flex-1 whitespace-pre px-2">
         {tokens ? (
           tokens.map((token, i) => (
             <span key={i} style={{ color: token.color }}>{token.content}</span>

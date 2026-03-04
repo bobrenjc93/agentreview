@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { type AgentReviewPayload } from "@/lib/payload/types";
 import { PayloadContext } from "@/hooks/usePayload";
 import { CommentsContext, useCommentsProvider } from "@/hooks/useComments";
@@ -34,10 +35,12 @@ const HOTKEYS: Array<{ key: string; description: string }> = [
   { key: "E", description: "Expand or collapse all files" },
   { key: "D", description: "Open Export Diff" },
   { key: "C", description: "Open Export Comments (when comments exist)" },
+  { key: "N", description: "Go to home and paste a new payload" },
   { key: "Esc", description: "Close any open modal" },
 ];
 
 export function ReviewLayout({ payload, sessionId }: ReviewLayoutProps) {
+  const router = useRouter();
   const [expandedFiles, setExpandedFiles] = useState<Set<string>>(
     () => new Set(payload.files.map((f) => f.path))
   );
@@ -90,6 +93,16 @@ export function ReviewLayout({ payload, sessionId }: ReviewLayoutProps) {
   }, []);
 
   useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    if (hasOpenModal) {
+      document.body.style.overflow = "hidden";
+    }
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [hasOpenModal]);
+
+  useEffect(() => {
     function isTypingTarget(target: EventTarget | null): boolean {
       if (!(target instanceof HTMLElement)) return false;
       const tagName = target.tagName;
@@ -140,6 +153,10 @@ export function ReviewLayout({ payload, sessionId }: ReviewLayoutProps) {
           event.preventDefault();
           setExportOpen(true);
           break;
+        case "n":
+          event.preventDefault();
+          router.push("/");
+          break;
         default:
           break;
       }
@@ -156,6 +173,7 @@ export function ReviewLayout({ payload, sessionId }: ReviewLayoutProps) {
     collapseAll,
     expandAll,
     commentsCount,
+    router,
   ]);
 
   return (

@@ -74,56 +74,60 @@ export function DiffView({ file }: DiffViewProps) {
 
   return (
     <div className="border border-gray-700 rounded-lg overflow-hidden">
-      {chunks.map((chunk, ci) => (
-        <div key={ci}>
-          <div className="bg-gray-800 text-gray-400 text-xs font-mono px-4 py-1 border-b border-gray-700">
-            {chunk.content}
-          </div>
-          {chunk.changes.map((change, li) => {
-            const currentLineIdx = lineIdx++;
-            const tokens = tokenMap?.get(currentLineIdx) ?? undefined;
-
-            const lineNum =
-              change.type === "add" || change.type === "normal"
-                ? (change as { ln2?: number; ln?: number }).ln2 ??
-                  (change as { ln?: number }).ln ??
-                  0
-                : (change as { ln1?: number; ln?: number }).ln1 ??
-                  (change as { ln?: number }).ln ??
-                  0;
-            const lineComments = getCommentsForLine(file.path, lineNum);
-            const isCommenting =
-              commentingLine?.lineNumber === lineNum;
-
-            return (
-              <div key={`${ci}-${li}`}>
-                <DiffLine
-                  change={change}
-                  onClickLineNumber={handleClickLine}
-                  highlighted={lineComments.length > 0}
-                  tokens={tokens}
-                />
-                {lineComments.map((c) => (
-                  <InlineComment
-                    key={c.id}
-                    comment={c}
-                    onDelete={removeComment}
-                  />
-                ))}
-                {isCommenting && (
-                  <InlineCommentForm
-                    onSubmit={handleAddComment}
-                    onCancel={() => setCommentingLine(null)}
-                  />
-                )}
+      <div className="overflow-x-auto">
+        <div className="min-w-full">
+          {chunks.map((chunk, ci) => (
+            <div key={ci}>
+              <div className="bg-gray-800 text-gray-400 text-xs font-mono px-4 py-1 border-b border-gray-700">
+                {chunk.content}
               </div>
-            );
-          })}
+              {chunk.changes.map((change, li) => {
+                const currentLineIdx = lineIdx++;
+                const tokens = tokenMap?.get(currentLineIdx) ?? undefined;
+
+                const lineNum =
+                  change.type === "add" || change.type === "normal"
+                    ? (change as { ln2?: number; ln?: number }).ln2 ??
+                      (change as { ln?: number }).ln ??
+                      0
+                    : (change as { ln1?: number; ln?: number }).ln1 ??
+                      (change as { ln?: number }).ln ??
+                      0;
+                const lineComments = getCommentsForLine(file.path, lineNum);
+                const isCommenting =
+                  commentingLine?.lineNumber === lineNum;
+
+                return (
+                  <div key={`${ci}-${li}`}>
+                    <DiffLine
+                      change={change}
+                      onClickLineNumber={handleClickLine}
+                      highlighted={lineComments.length > 0}
+                      tokens={tokens}
+                    />
+                    {lineComments.map((c) => (
+                      <InlineComment
+                        key={c.id}
+                        comment={c}
+                        onDelete={removeComment}
+                      />
+                    ))}
+                    {isCommenting && (
+                      <InlineCommentForm
+                        onSubmit={handleAddComment}
+                        onCancel={() => setCommentingLine(null)}
+                      />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+          {chunks.length === 0 && (
+            <div className="p-4 text-gray-500 text-sm">No diff hunks to display</div>
+          )}
         </div>
-      ))}
-      {chunks.length === 0 && (
-        <div className="p-4 text-gray-500 text-sm">No diff hunks to display</div>
-      )}
+      </div>
     </div>
   );
 }
