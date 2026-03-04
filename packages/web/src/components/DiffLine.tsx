@@ -5,12 +5,13 @@ import { type ThemedToken } from "@/hooks/useHighlighter";
 
 interface DiffLineProps {
   change: ParsedChange;
+  content: string;
   onClickLineNumber: (lineNumber: number, content: string) => void;
   highlighted?: boolean;
   tokens?: ThemedToken[];
 }
 
-export function DiffLine({ change, onClickLineNumber, highlighted, tokens }: DiffLineProps) {
+export function DiffLine({ change, content, onClickLineNumber, highlighted, tokens }: DiffLineProps) {
   const isAdd = change.type === "add";
   const isDel = change.type === "del";
   const isNormal = change.type === "normal";
@@ -39,14 +40,14 @@ export function DiffLine({ change, onClickLineNumber, highlighted, tokens }: Dif
       className={`flex font-mono text-xs leading-6 ${bgClass} ${highlighted ? "ring-1 ring-blue-500 ring-inset" : ""} group`}
     >
       <button
-        onClick={() => onClickLineNumber(clickableLineNum, change.content)}
+        onClick={() => onClickLineNumber(clickableLineNum, content)}
         className="w-10 text-right text-gray-600 hover:text-blue-400 hover:bg-gray-800 px-1 select-none shrink-0 cursor-pointer"
         title="Add comment"
       >
         {oldNum ?? ""}
       </button>
       <button
-        onClick={() => onClickLineNumber(clickableLineNum, change.content)}
+        onClick={() => onClickLineNumber(clickableLineNum, content)}
         className="w-10 text-right text-gray-600 hover:text-blue-400 hover:bg-gray-800 px-1 select-none shrink-0 cursor-pointer"
         title="Add comment"
       >
@@ -59,7 +60,7 @@ export function DiffLine({ change, onClickLineNumber, highlighted, tokens }: Dif
             <span key={i} style={{ color: token.color }}>{token.content}</span>
           ))
         ) : (
-          <span className={fallbackTextClass}>{change.content}</span>
+          <span className={fallbackTextClass}>{content}</span>
         )}
       </span>
     </div>

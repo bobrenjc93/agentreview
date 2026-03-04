@@ -14,6 +14,14 @@ interface DiffViewProps {
   file: AgentReviewFile;
 }
 
+function stripDiffPrefix(content: string): string {
+  const marker = content[0];
+  if (marker === "+" || marker === "-" || marker === " ") {
+    return content.slice(1);
+  }
+  return content;
+}
+
 export function DiffView({ file }: DiffViewProps) {
   const [commentingLine, setCommentingLine] = useState<{
     lineNumber: number;
@@ -35,7 +43,7 @@ export function DiffView({ file }: DiffViewProps) {
     const lines: string[] = [];
     for (const chunk of chunks) {
       for (const change of chunk.changes) {
-        lines.push(change.content);
+        lines.push(stripDiffPrefix(change.content));
       }
     }
 
@@ -84,6 +92,7 @@ export function DiffView({ file }: DiffViewProps) {
               {chunk.changes.map((change, li) => {
                 const currentLineIdx = lineIdx++;
                 const tokens = tokenMap?.get(currentLineIdx) ?? undefined;
+                const lineContent = stripDiffPrefix(change.content);
 
                 const lineNum =
                   change.type === "add" || change.type === "normal"
@@ -101,6 +110,7 @@ export function DiffView({ file }: DiffViewProps) {
                   <div key={`${ci}-${li}`}>
                     <DiffLine
                       change={change}
+                      content={lineContent}
                       onClickLineNumber={handleClickLine}
                       highlighted={lineComments.length > 0}
                       tokens={tokens}
