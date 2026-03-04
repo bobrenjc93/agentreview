@@ -7,6 +7,7 @@ import { CommentsContext, useCommentsProvider } from "@/hooks/useComments";
 import { DiffView } from "./DiffView";
 import { FullFileView } from "./FullFileView";
 import { ExportModal } from "./ExportModal";
+import { ExportDiffModal } from "./ExportDiffModal";
 import { type AgentReviewFile } from "@/lib/payload/types";
 
 interface ReviewLayoutProps {
@@ -34,6 +35,7 @@ export function ReviewLayout({ payload, sessionId }: ReviewLayoutProps) {
   );
   const [fullFileMode, setFullFileMode] = useState<Set<string>>(new Set());
   const [exportOpen, setExportOpen] = useState(false);
+  const [exportDiffOpen, setExportDiffOpen] = useState(false);
   const commentsValue = useCommentsProvider(sessionId);
 
   const toggleFile = useCallback((path: string) => {
@@ -98,6 +100,12 @@ export function ReviewLayout({ payload, sessionId }: ReviewLayoutProps) {
                 {commentsValue.comments.length} comment
                 {commentsValue.comments.length !== 1 ? "s" : ""}
               </span>
+              <button
+                onClick={() => setExportDiffOpen(true)}
+                className="px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 rounded-lg font-medium transition-colors"
+              >
+                Export Diff
+              </button>
               <button
                 onClick={() => setExportOpen(true)}
                 disabled={commentsValue.comments.length === 0}
@@ -173,6 +181,7 @@ export function ReviewLayout({ payload, sessionId }: ReviewLayoutProps) {
         </div>
 
         <ExportModal open={exportOpen} onClose={() => setExportOpen(false)} />
+        <ExportDiffModal open={exportDiffOpen} onClose={() => setExportDiffOpen(false)} />
       </CommentsContext.Provider>
     </PayloadContext.Provider>
   );
