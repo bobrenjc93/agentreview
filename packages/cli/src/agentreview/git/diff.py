@@ -29,23 +29,23 @@ def _get_untracked_files_diff() -> str:
     return "\n\n".join(diffs)
 
 
-def get_diff(mode: Literal["default", "staged", "branch"], base_branch: str) -> str:
-    match mode:
-        case "staged":
-            args = ["git", "diff", "--cached"]
-        case "branch":
-            args = ["git", "diff", f"{base_branch}...HEAD"]
-        case _:
-            args = ["git", "diff", "HEAD"]
-
-    tracked_diff = _run_git(args[1:]).stdout
-
-    if mode != "default":
-        return tracked_diff
-
+def _combine_with_untracked(tracked_diff: str) -> str:
     untracked_diff = _get_untracked_files_diff()
     if not untracked_diff:
         return tracked_diff
     if not tracked_diff:
         return f"{untracked_diff}\n"
     return f"{tracked_diff.rstrip()}\n\n{untracked_diff}\n"
+
+
+def get_diff(mode: Literal["default", "staged", "branch"], base_branch: str) -> str:
+    match mode:
+        case "staged":
+            return _run_git(["diff", "--cached"]).stdout
+        case "branch":
+            merge_base = _run_git(["merge-base", base_branch, "HEAD"]).stdout.strip()
+            tracked_diff = _run_git(["diff", merge_base]).stdout
+            return _combine_with_untracked(tracked_diff)
+        case _:
+            tracked_diff = _run_git(["diff", "HEAD"]).stdout
+            return _combine_with_untracked(tracked_diff)

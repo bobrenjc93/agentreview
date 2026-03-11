@@ -11,12 +11,43 @@ from .payload.encode import encode_payload
 from .payload.types import AgentReviewPayload
 
 
-@click.command()
-@click.option("--staged", is_flag=True, help="Only include staged changes (git diff --cached)")
-@click.option("--branch", "base_branch", default=None, metavar="BASE",
-              help="Compare current branch against BASE (default: main)")
+HELP_EPILOG = """
+\b
+Examples:
+  agentreview
+    Review all staged, unstaged, and untracked changes in your working tree.
+  agentreview --staged
+    Review only what is staged for the next commit.
+  agentreview --branch main
+    Review everything on your branch relative to main, including local uncommitted changes.
+  agentreview --branch origin/main
+    Compare against the remote-tracking branch instead of a local branch ref.
+
+\b
+Common use cases:
+  agentreview | pbcopy
+    Copy the payload so you can paste it into ChatGPT, Codex, Claude, or another LLM.
+  agentreview --branch main > review.txt
+    Save a feature-branch review payload to a file for later use.
+  git add -p && agentreview --staged
+    Review only the hunks you intentionally staged.
+"""
+
+
+@click.command(epilog=HELP_EPILOG)
+@click.option("--staged", is_flag=True, help="Only include staged changes (git diff --cached).")
+@click.option(
+    "--branch",
+    "base_branch",
+    default=None,
+    metavar="BASE",
+    help=(
+        "Compare your current worktree against the merge-base with BASE. "
+        "Includes committed branch changes plus local uncommitted changes."
+    ),
+)
 def main(staged: bool, base_branch: str | None) -> None:
-    """Generate an LLM-friendly code review payload from git diffs.
+    """Generate an LLM-friendly code review payload from git changes.
 
     Default mode includes staged, unstaged, and untracked file changes.
     """

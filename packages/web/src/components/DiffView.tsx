@@ -9,6 +9,11 @@ import { InlineComment } from "./InlineComment";
 import { useComments } from "@/hooks/useComments";
 import { useHighlighter, type ThemedToken } from "@/hooks/useHighlighter";
 import { type BundledLanguage } from "shiki";
+import {
+  formatCommentRange,
+  type ReviewComment,
+  type ReviewCommentSide,
+} from "@/lib/comments/types";
 
 interface DiffViewProps {
   file: AgentReviewFile;
@@ -35,6 +40,32 @@ interface PreparedChunk {
   changes: PreparedChange[];
   foldRangeByStart: Map<number, FoldRange>;
   foldStarts: number[];
+}
+
+interface VisibleCommentableRow {
+  key: string;
+  chunkIndex: number;
+  rowIndex: number;
+  order: number;
+  content: string;
+  oldLineNumber?: number;
+  newLineNumber?: number;
+}
+
+interface ActiveLineSelection {
+  side: ReviewCommentSide;
+  anchorRowKey: string;
+  currentRowKey: string;
+}
+
+interface PendingCommentRange {
+  side: ReviewCommentSide;
+  startLineNumber: number;
+  endLineNumber: number;
+  lineContent: string;
+  lineContents: string[];
+  startRowKey: string;
+  endRowKey: string;
 }
 
 type OpenBracket = "{" | "[" | "(";
@@ -204,6 +235,21 @@ function foldKey(chunkIndex: number, start: number): string {
   return `${chunkIndex}:${start}`;
 }
 
+function commentRowKey(chunkIndex: number, rowIndex: number): string {
+  return `${chunkIndex}:${rowIndex}`;
+}
+
+function getChangeOldLineNumber(change: ParsedChange): number | null {
+  if (change.type !== "del" && change.type !== "normal") return null;
+  const lineNumber =
+    (change as { ln1?: number; ln?: number }).ln1 ??
+    (change as { ln?: number }).ln;
+  if (typeof lineNumber !== "number" || lineNumber <= 0) {
+    return null;
+  }
+  return lineNumber;
+}
+
 function getChangeNewLineNumber(change: ParsedChange): number | null {
   if (change.type !== "add" && change.type !== "normal") return null;
   const lineNumber =
@@ -235,16 +281,62 @@ function buildChunkLineRanges(chunks: PreparedChunk[]): Array<ChunkLineRange | n
   });
 }
 
+function getRowLineNumber(
+  row: VisibleCommentableRow,
+  side: ReviewCommentSide
+): number | undefined {
+  return side === "old" ? row.oldLineNumber : row.newLineNumber;
+}
+
+function buildSelectedCommentRange(
+  selection: ActiveLineSelection,
+  rows: VisibleCommentableRow[]
+): PendingCommentRange | null {
+  const rowIndexes = new Map(rows.map((row, index) => [row.key, index]));
+  const anchorIndex = rowIndexes.get(selection.anchorRowKey);
+  const currentIndex = rowIndexes.get(selection.currentRowKey);
+  if (anchorIndex == null || currentIndex == null) {
+    return null;
+  }
+
+  const startIndex = Math.min(anchorIndex, currentIndex);
+  const endIndex = Math.max(anchorIndex, currentIndex);
+  const selectedRows = rows
+    .slice(startIndex, endIndex + 1)
+    .filter((row) => getRowLineNumber(row, selection.side) != null);
+
+  if (selectedRows.length === 0) {
+    return null;
+  }
+
+  const firstRow = selectedRows[0];
+  const lastRow = selectedRows[selectedRows.length - 1];
+  const startLineNumber = getRowLineNumber(firstRow, selection.side);
+  const endLineNumber = getRowLineNumber(lastRow, selection.side);
+
+  if (startLineNumber == null || endLineNumber == null) {
+    return null;
+  }
+
+  return {
+    side: selection.side,
+    startLineNumber,
+    endLineNumber,
+    lineContent: firstRow.content,
+    lineContents: selectedRows.map((row) => row.content),
+    startRowKey: firstRow.key,
+    endRowKey: lastRow.key,
+  };
+}
+
 export function DiffView({ file }: DiffViewProps) {
-  const [commentingLine, setCommentingLine] = useState<{
-    lineNumber: number;
-    content: string;
-  } | null>(null);
+  const [commentingRange, setCommentingRange] = useState<PendingCommentRange | null>(null);
+  const [dragSelection, setDragSelection] = useState<ActiveLineSelection | null>(null);
   const [collapsedFolds, setCollapsedFolds] = useState<Set<string>>(new Set());
   const [expandedContextByGap, setExpandedContextByGap] = useState<
     Record<number, { up: number; down: number }>
   >({});
-  const { addComment, removeComment, getCommentsForLine } = useComments();
+  const { addComment, removeComment, getCommentsEndingOnLine, getCommentsForLine } = useComments();
   const highlighter = useHighlighter();
 
   const parsed = parseDiffString(file.diff);
@@ -277,6 +369,11 @@ export function DiffView({ file }: DiffViewProps) {
   }, [file.diff, file.path]);
 
   useEffect(() => {
+    setCommentingRange(null);
+    setDragSelection(null);
+  }, [file.diff, file.path]);
+
+  useEffect(() => {
     setExpandedContextByGap({});
   }, [file.diff, file.path, file.source]);
 
@@ -302,6 +399,83 @@ export function DiffView({ file }: DiffViewProps) {
     () => buildChunkLineRanges(preparedChunks),
     [preparedChunks]
   );
+
+  const visibleCommentableRows = useMemo<VisibleCommentableRow[]>(() => {
+    const rows: VisibleCommentableRow[] = [];
+
+    for (let chunkIndex = 0; chunkIndex < preparedChunks.length; chunkIndex++) {
+      const chunk = preparedChunks[chunkIndex];
+      for (let rowIndex = 0; rowIndex < chunk.changes.length; rowIndex++) {
+        const preparedChange = chunk.changes[rowIndex];
+        rows.push({
+          key: commentRowKey(chunkIndex, rowIndex),
+          chunkIndex,
+          rowIndex,
+          order: rows.length,
+          content: preparedChange.content,
+          oldLineNumber: getChangeOldLineNumber(preparedChange.change) ?? undefined,
+          newLineNumber: getChangeNewLineNumber(preparedChange.change) ?? undefined,
+        });
+
+        const foldRange = chunk.foldRangeByStart.get(rowIndex);
+        const isFolded = !!foldRange && collapsedFolds.has(foldKey(chunkIndex, rowIndex));
+        if (foldRange && isFolded) {
+          rowIndex = foldRange.end;
+        }
+      }
+    }
+
+    return rows;
+  }, [preparedChunks, collapsedFolds]);
+
+  const activeSelectionRows = useMemo(() => {
+    if (dragSelection) {
+      return buildSelectedCommentRange(dragSelection, visibleCommentableRows);
+    }
+    return commentingRange;
+  }, [commentingRange, dragSelection, visibleCommentableRows]);
+
+  const selectedRowKeys = useMemo(() => {
+    if (!activeSelectionRows) return new Set<string>();
+
+    const rowIndexes = new Map(
+      visibleCommentableRows.map((row, index) => [row.key, index])
+    );
+    const startIndex = rowIndexes.get(activeSelectionRows.startRowKey);
+    const endIndex = rowIndexes.get(activeSelectionRows.endRowKey);
+    if (startIndex == null || endIndex == null) {
+      return new Set<string>();
+    }
+
+    const keys = new Set<string>();
+    for (const row of visibleCommentableRows.slice(startIndex, endIndex + 1)) {
+      if (getRowLineNumber(row, activeSelectionRows.side) != null) {
+        keys.add(row.key);
+      }
+    }
+    return keys;
+  }, [activeSelectionRows, visibleCommentableRows]);
+
+  const finalizeDragSelection = useCallback(() => {
+    if (!dragSelection) return;
+    setCommentingRange(buildSelectedCommentRange(dragSelection, visibleCommentableRows));
+    setDragSelection(null);
+  }, [dragSelection, visibleCommentableRows]);
+
+  useEffect(() => {
+    if (!dragSelection) return;
+
+    function handlePointerUp() {
+      finalizeDragSelection();
+    }
+
+    window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handlePointerUp);
+    return () => {
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerUp);
+    };
+  }, [dragSelection, finalizeDragSelection]);
 
   const canRenderContextGaps = useMemo(
     () =>
@@ -407,19 +581,52 @@ export function DiffView({ file }: DiffViewProps) {
     return map;
   }, [highlighter, file.language, preparedChunks]);
 
-  function handleClickLine(lineNumber: number, content: string) {
-    setCommentingLine({ lineNumber, content });
+  function handleStartLineSelection({
+    rowKey,
+    side,
+  }: {
+    rowKey: string;
+    side: ReviewCommentSide;
+  }) {
+    setCommentingRange(null);
+    setDragSelection({
+      side,
+      anchorRowKey: rowKey,
+      currentRowKey: rowKey,
+    });
+  }
+
+  function handleExtendLineSelection({
+    rowKey,
+    side,
+  }: {
+    rowKey: string;
+    side: ReviewCommentSide;
+  }) {
+    setDragSelection((current) => {
+      if (!current || current.side !== side) {
+        return current;
+      }
+      if (current.currentRowKey === rowKey) {
+        return current;
+      }
+      return { ...current, currentRowKey: rowKey };
+    });
   }
 
   function handleAddComment(body: string) {
-    if (!commentingLine) return;
+    if (!commentingRange) return;
     addComment({
       filePath: file.path,
-      lineNumber: commentingLine.lineNumber,
-      lineContent: commentingLine.content,
+      lineNumber: commentingRange.startLineNumber,
+      startLineNumber: commentingRange.startLineNumber,
+      endLineNumber: commentingRange.endLineNumber,
+      side: commentingRange.side,
+      lineContent: commentingRange.lineContent,
+      lineContents: commentingRange.lineContents,
       body,
     });
-    setCommentingLine(null);
+    setCommentingRange(null);
   }
 
   function renderContextLine(
@@ -535,28 +742,70 @@ export function DiffView({ file }: DiffViewProps) {
                   const lineContent = preparedChange.content;
                   const foldRange = chunk.foldRangeByStart.get(rowIndex);
                   const foldKeyValue = foldKey(ci, rowIndex);
+                  const rowKey = commentRowKey(ci, rowIndex);
                   const isFolded =
                     !!foldRange &&
                     collapsedFolds.has(foldKeyValue);
 
-                  const lineNum =
-                    change.type === "add" || change.type === "normal"
-                      ? (change as { ln2?: number; ln?: number }).ln2 ??
-                        (change as { ln?: number }).ln ??
-                        0
-                      : (change as { ln1?: number; ln?: number }).ln1 ??
-                        (change as { ln?: number }).ln ??
-                        0;
-                  const lineComments = getCommentsForLine(file.path, lineNum);
-                  const isCommenting = commentingLine?.lineNumber === lineNum;
+                  const oldLineNumber = getChangeOldLineNumber(change) ?? undefined;
+                  const newLineNumber = getChangeNewLineNumber(change) ?? undefined;
+                  const oldLineComments =
+                    typeof oldLineNumber === "number"
+                      ? getCommentsForLine(file.path, oldLineNumber, "old")
+                      : [];
+                  const newLineComments =
+                    typeof newLineNumber === "number"
+                      ? getCommentsForLine(file.path, newLineNumber, "new")
+                      : [];
+                  const endingComments = new Map<string, ReviewComment>();
+                  if (typeof oldLineNumber === "number") {
+                    for (const comment of getCommentsEndingOnLine(
+                      file.path,
+                      oldLineNumber,
+                      "old"
+                    )) {
+                      endingComments.set(comment.id, comment);
+                    }
+                  }
+                  if (typeof newLineNumber === "number") {
+                    for (const comment of getCommentsEndingOnLine(
+                      file.path,
+                      newLineNumber,
+                      "new"
+                    )) {
+                      endingComments.set(comment.id, comment);
+                    }
+                  }
+                  const rowComments = [...endingComments.values()];
+                  const isCommenting = commentingRange?.endRowKey === rowKey;
+                  const selectedSide = activeSelectionRows?.side;
+                  const isSelected = selectedRowKeys.has(rowKey);
 
                   rows.push(
-                    <div key={`${ci}-${rowIndex}`}>
+                    <div key={rowKey}>
                       <DiffLine
+                        rowKey={rowKey}
                         change={change}
                         content={lineContent}
-                        onClickLineNumber={handleClickLine}
-                        highlighted={lineComments.length > 0}
+                        onStartLineSelection={handleStartLineSelection}
+                        onExtendLineSelection={handleExtendLineSelection}
+                        highlighted={
+                          oldLineComments.length > 0 ||
+                          newLineComments.length > 0
+                        }
+                        oldHighlighted={oldLineComments.length > 0}
+                        newHighlighted={newLineComments.length > 0}
+                        selected={isSelected}
+                        oldSelected={
+                          isSelected &&
+                          selectedSide === "old" &&
+                          typeof oldLineNumber === "number"
+                        }
+                        newSelected={
+                          isSelected &&
+                          selectedSide === "new" &&
+                          typeof newLineNumber === "number"
+                        }
                         tokens={tokens}
                         foldable={!!foldRange}
                         folded={isFolded}
@@ -564,9 +813,9 @@ export function DiffView({ file }: DiffViewProps) {
                           foldRange
                             ? () => toggleFold(ci, rowIndex)
                             : undefined
-                        }
+                          }
                       />
-                      {lineComments.map((c) => (
+                      {rowComments.map((c) => (
                         <InlineComment
                           key={c.id}
                           comment={c}
@@ -575,8 +824,13 @@ export function DiffView({ file }: DiffViewProps) {
                       ))}
                       {isCommenting && (
                         <InlineCommentForm
+                          selectionLabel={formatCommentRange(
+                            commentingRange.startLineNumber,
+                            commentingRange.endLineNumber,
+                            commentingRange.side
+                          )}
                           onSubmit={handleAddComment}
-                          onCancel={() => setCommentingLine(null)}
+                          onCancel={() => setCommentingRange(null)}
                         />
                       )}
                     </div>

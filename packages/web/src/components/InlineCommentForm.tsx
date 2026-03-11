@@ -3,11 +3,16 @@
 import { useState } from "react";
 
 interface InlineCommentFormProps {
+  selectionLabel?: string;
   onSubmit: (body: string) => void;
   onCancel: () => void;
 }
 
-export function InlineCommentForm({ onSubmit, onCancel }: InlineCommentFormProps) {
+export function InlineCommentForm({
+  selectionLabel,
+  onSubmit,
+  onCancel,
+}: InlineCommentFormProps) {
   const [body, setBody] = useState("");
 
   function handleSubmit(e: React.FormEvent) {
@@ -19,6 +24,9 @@ export function InlineCommentForm({ onSubmit, onCancel }: InlineCommentFormProps
 
   return (
     <form onSubmit={handleSubmit} className="bg-gray-800 border border-gray-600 rounded-md p-3 mx-2 my-1">
+      {selectionLabel && (
+        <p className="mb-2 text-xs text-gray-400">{selectionLabel}</p>
+      )}
       <textarea
         autoFocus
         value={body}

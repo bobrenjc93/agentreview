@@ -1,16 +1,32 @@
 "use client";
 
 import { createContext, useContext, useState, useCallback, useEffect } from "react";
-import { type ReviewComment } from "@/lib/comments/types";
+import {
+  type NewReviewComment,
+  type ReviewComment,
+  type ReviewCommentSide,
+  getCommentEndLine,
+  getCommentStartLine,
+  normalizeReviewComment,
+} from "@/lib/comments/types";
 import { loadComments, saveComments, clearComments as clearStorage } from "@/lib/comments/storage";
 
 interface CommentsContextValue {
   comments: ReviewComment[];
-  addComment: (comment: Omit<ReviewComment, "id" | "createdAt">) => void;
+  addComment: (comment: NewReviewComment) => void;
   removeComment: (id: string) => void;
   clearComments: () => void;
   getCommentsForFile: (filePath: string) => ReviewComment[];
-  getCommentsForLine: (filePath: string, lineNumber: number) => ReviewComment[];
+  getCommentsForLine: (
+    filePath: string,
+    lineNumber: number,
+    side?: ReviewCommentSide
+  ) => ReviewComment[];
+  getCommentsEndingOnLine: (
+    filePath: string,
+    lineNumber: number,
+    side?: ReviewCommentSide
+  ) => ReviewComment[];
 }
 
 export const CommentsContext = createContext<CommentsContextValue | null>(null);
@@ -30,12 +46,12 @@ export function useCommentsProvider(sessionId: string) {
   }, [sessionId, comments, loadedSessionId]);
 
   const addComment = useCallback(
-    (comment: Omit<ReviewComment, "id" | "createdAt">) => {
-      const newComment: ReviewComment = {
+    (comment: NewReviewComment) => {
+      const newComment = normalizeReviewComment({
         ...comment,
         id: crypto.randomUUID(),
         createdAt: new Date().toISOString(),
-      };
+      });
       setComments((prev) => [...prev, newComment]);
     },
     []
@@ -56,9 +72,24 @@ export function useCommentsProvider(sessionId: string) {
   );
 
   const getCommentsForLine = useCallback(
-    (filePath: string, lineNumber: number) =>
+    (filePath: string, lineNumber: number, side?: ReviewCommentSide) =>
       comments.filter(
-        (c) => c.filePath === filePath && c.lineNumber === lineNumber
+        (comment) =>
+          comment.filePath === filePath &&
+          (!side || !comment.side || comment.side === side) &&
+          getCommentStartLine(comment) <= lineNumber &&
+          getCommentEndLine(comment) >= lineNumber
+      ),
+    [comments]
+  );
+
+  const getCommentsEndingOnLine = useCallback(
+    (filePath: string, lineNumber: number, side?: ReviewCommentSide) =>
+      comments.filter(
+        (comment) =>
+          comment.filePath === filePath &&
+          (!side || !comment.side || comment.side === side) &&
+          getCommentEndLine(comment) === lineNumber
       ),
     [comments]
   );
@@ -70,6 +101,7 @@ export function useCommentsProvider(sessionId: string) {
     clearComments: clearAll,
     getCommentsForFile,
     getCommentsForLine,
+    getCommentsEndingOnLine,
   };
 }
 

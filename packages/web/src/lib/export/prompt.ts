@@ -1,5 +1,11 @@
 import { type AgentReviewPayload } from "@/lib/payload/types";
-import { type ReviewComment } from "@/lib/comments/types";
+import {
+  type ReviewComment,
+  formatReviewCommentRange,
+  getCommentEndLine,
+  getCommentLineContents,
+  getCommentStartLine,
+} from "@/lib/comments/types";
 
 export function generateExportPrompt(
   payload: AgentReviewPayload,
@@ -29,17 +35,19 @@ export function generateExportPrompt(
 
   for (const [filePath, fileComments] of byFile) {
     lines.push("", `## File: ${filePath}`);
-    // Sort by line number
+    // Sort by line range
     const sorted = [...fileComments].sort(
-      (a, b) => a.lineNumber - b.lineNumber
+      (a, b) =>
+        getCommentStartLine(a) - getCommentStartLine(b) ||
+        getCommentEndLine(a) - getCommentEndLine(b)
     );
     for (const comment of sorted) {
       lines.push(
         "",
-        `### Line ${comment.lineNumber}:`,
-        `> ${comment.lineContent}`,
+        `### ${formatReviewCommentRange(comment)}:`,
+        ...getCommentLineContents(comment).map((line) => `> ${line}`),
         "",
-        `**Comment:** ${comment.body}`
+        `**Comment:** ${comment.body}`,
       );
     }
     lines.push("", "---");
