@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
 
 from ..payload.types import AgentReviewFile
+from ..vcs import Repository
 
 EXT_TO_LANG: dict[str, str] = {
     "ts": "typescript",
@@ -46,17 +46,7 @@ def _detect_language(path: str) -> str | None:
     return EXT_TO_LANG.get(ext)
 
 
-def _repo_root() -> str:
-    result = subprocess.run(
-        ["git", "rev-parse", "--show-toplevel"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return result.stdout.strip()
-
-
-def _parse_diff_into_files(raw_diff: str) -> list[dict]:
+def _parse_diff_into_files(raw_diff: str) -> list[dict[str, str]]:
     chunks = re.split(r"^(?=diff --git )", raw_diff, flags=re.MULTILINE)
     entries = []
 
@@ -65,11 +55,11 @@ def _parse_diff_into_files(raw_diff: str) -> list[dict]:
         if not chunk:
             continue
 
-        # Extract b-side path
-        header_match = re.match(r"diff --git a/.+ b/(.+)", chunk)
+        header = chunk.splitlines()[0]
+        header_match = re.match(r"diff --git a/(.+) b/(.+)", header)
         if not header_match:
             continue
-        path = header_match.group(1)
+        path = header_match.group(2)
 
         if "new file mode" in chunk:
             status = "added"
@@ -85,8 +75,7 @@ def _parse_diff_into_files(raw_diff: str) -> list[dict]:
     return entries
 
 
-def get_file_contents(raw_diff: str) -> list[AgentReviewFile]:
-    root = _repo_root()
+def get_file_contents(repo: Repository, raw_diff: str) -> list[AgentReviewFile]:
     entries = _parse_diff_into_files(raw_diff)
     results: list[AgentReviewFile] = []
 
@@ -94,7 +83,7 @@ def get_file_contents(raw_diff: str) -> list[AgentReviewFile]:
         source: str | None = None
 
         if entry["status"] != "deleted":
-            filepath = os.path.join(root, entry["path"])
+            filepath = os.path.join(repo.root, entry["path"])
             try:
                 with open(filepath, "r", encoding="utf-8", errors="replace") as f:
                     source = f.read()

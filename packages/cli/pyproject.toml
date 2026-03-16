@@ -1,7 +1,7 @@
 [project]
 name = "agentreview"
-version = "0.1.4"
-description = "Generate LLM-friendly code review payloads from git diffs"
+version = "0.1.5"
+description = "Generate LLM-friendly code review payloads from git or hg diffs"
 requires-python = ">=3.10"
 dependencies = [
     "click>=8.1",
