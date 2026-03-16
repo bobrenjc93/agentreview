@@ -5,31 +5,19 @@ import os
 import subprocess
 from typing import Literal
 
-from ..vcs import Repository
+from ..vcs import Repository, run_command
 
 
 def _run_git(
     repo: Repository, args: list[str], *, check: bool = True
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", *args],
-        capture_output=True,
-        text=True,
-        cwd=repo.root,
-        check=check,
-    )
+    return run_command("git", repo, args, check=check)
 
 
 def _run_hg(
     repo: Repository, args: list[str], *, check: bool = True
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["hg", *args],
-        capture_output=True,
-        text=True,
-        cwd=repo.root,
-        check=check,
-    )
+    return run_command("hg", repo, args, check=check)
 
 
 def _raise_command_error(result: subprocess.CompletedProcess[str]) -> None:

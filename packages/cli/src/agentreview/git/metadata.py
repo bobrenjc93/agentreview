@@ -6,20 +6,16 @@ import subprocess
 from typing import Literal
 
 from ..payload.types import PayloadMeta
-from ..vcs import Repository
+from ..vcs import Repository, run_command
 
 
 def _git(repo: Repository, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args], capture_output=True, text=True, cwd=repo.root, check=True
-    )
+    result = run_command("git", repo, list(args), check=True)
     return result.stdout.strip()
 
 
 def _hg(repo: Repository, *args: str, check: bool = True) -> str:
-    result = subprocess.run(
-        ["hg", *args], capture_output=True, text=True, cwd=repo.root, check=check
-    )
+    result = run_command("hg", repo, list(args), check=check)
     return result.stdout.strip()
 
 

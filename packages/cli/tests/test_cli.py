@@ -9,6 +9,7 @@ from click.testing import CliRunner
 from agentreview.cli import main
 from agentreview.git.diff import get_diff
 from agentreview.git.metadata import get_metadata
+from agentreview.payload.types import PayloadMeta
 from agentreview.vcs import Repository
 
 
@@ -166,6 +167,7 @@ class HelpTextTests(unittest.TestCase):
         self.assertIn("agentreview --commit HEAD~3", result.output)
         self.assertIn("Common use cases:", result.output)
         self.assertIn("git add -p && agentreview --staged", result.output)
+        self.assertIn("--verbose", result.output)
         self.assertIn("--staged is only available in Git repositories.", result.output)
         self.assertIn("Use only one of --staged, --branch, or --commit.", result.output)
         self.assertIn("COMMIT can be any git commit-ish or Mercurial revision identifier.", result.output)
@@ -185,7 +187,7 @@ class CliModeValidationTests(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 2)
         self.assertIn("--staged is only available in Git repositories.", result.output)
-        detect_repository.assert_called_once_with()
+        detect_repository.assert_called_once_with(verbose=False)
 
     @patch("agentreview.cli.get_diff")
     @patch("agentreview.cli.detect_repository", return_value=Repository(kind="hg", root="/repo"))
@@ -200,7 +202,44 @@ class CliModeValidationTests(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 1)
         self.assertIn("Error running hg diff: abort: unknown revision 'abc123'", result.output)
-        detect_repository.assert_called_once_with()
+        detect_repository.assert_called_once_with(verbose=False)
+
+    @patch("agentreview.cli.get_file_contents", return_value=[])
+    @patch(
+        "agentreview.cli.get_metadata",
+        return_value=PayloadMeta(
+            repo="agentreview",
+            branch="main",
+            commit_hash="abc123",
+            commit_message="Test commit",
+            timestamp="2026-03-16T00:00:00+00:00",
+            diff_mode="commit",
+            base_commit="abc123",
+        ),
+    )
+    @patch("agentreview.cli.get_diff", return_value="diff --git a/app.py b/app.py\n")
+    @patch(
+        "agentreview.cli.detect_repository",
+        return_value=Repository(kind="git", root="/repo", verbose=True),
+    )
+    def test_verbose_flag_emits_progress_messages(
+        self,
+        detect_repository,
+        get_diff_mock,
+        get_metadata_mock,
+        get_file_contents_mock,
+    ) -> None:
+        result = CliRunner().invoke(main, ["-v", "--commit", "abc123"])
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("[agentreview] mode=commit base=abc123", result.output)
+        self.assertIn("[agentreview] diff bytes=", result.output)
+        self.assertIn("[agentreview] metadata repo=agentreview branch=main commit=abc123", result.output)
+        self.assertIn("[agentreview] files=0", result.output)
+        detect_repository.assert_called_once_with(verbose=True)
+        get_diff_mock.assert_called_once()
+        get_metadata_mock.assert_called_once()
+        get_file_contents_mock.assert_called_once()
 
 
 class MetadataTests(unittest.TestCase):
