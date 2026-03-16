@@ -32,6 +32,34 @@ def _run_hg(
     )
 
 
+def _raise_command_error(result: subprocess.CompletedProcess[str]) -> None:
+    raise subprocess.CalledProcessError(
+        result.returncode,
+        result.args,
+        output=result.stdout,
+        stderr=result.stderr,
+    )
+
+
+def _supports_modern_hg_diff(stderr: str) -> bool:
+    normalized = stderr.lower()
+    unsupported_markers = ("unknown option", "not recognized", "no such option")
+    return "--from" not in normalized or not any(marker in normalized for marker in unsupported_markers)
+
+
+def _run_hg_diff_against_working_copy(repo: Repository, revision: str) -> str:
+    modern = _run_hg(repo, ["diff", "--git", "--from", revision], check=False)
+    if modern.returncode == 0:
+        return modern.stdout
+    if _supports_modern_hg_diff(modern.stderr):
+        _raise_command_error(modern)
+
+    legacy = _run_hg(repo, ["diff", "--git", "-r", revision], check=False)
+    if legacy.returncode == 0:
+        return legacy.stdout
+    _raise_command_error(legacy)
+
+
 def _new_file_mode(path: str) -> str:
     return "100755" if os.access(path, os.X_OK) else "100644"
 
@@ -131,10 +159,10 @@ def _get_hg_diff(repo: Repository, mode: Literal["default", "staged", "branch", 
         case "branch":
             base_node = _resolve_hg_node(repo, base_ref)
             ancestor = _resolve_hg_node(repo, f"ancestor(., {base_node})")
-            tracked_diff = _run_hg(repo, ["diff", "--git", "--from", ancestor]).stdout
+            tracked_diff = _run_hg_diff_against_working_copy(repo, ancestor)
             return _combine_with_untracked(repo, tracked_diff)
         case "commit":
-            tracked_diff = _run_hg(repo, ["diff", "--git", "--from", base_ref]).stdout
+            tracked_diff = _run_hg_diff_against_working_copy(repo, base_ref)
             return _combine_with_untracked(repo, tracked_diff)
         case _:
             tracked_diff = _run_hg(repo, ["diff", "--git"]).stdout

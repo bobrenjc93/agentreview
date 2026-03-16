@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import sys
 
 import click
@@ -104,6 +105,10 @@ def main(staged: bool, base_branch: str | None, base_commit: str | None) -> None
 
     try:
         diff = get_diff(repository, diff_mode, base_ref)
+    except subprocess.CalledProcessError as exc:
+        detail = exc.stderr.strip() or exc.stdout.strip() or str(exc)
+        click.echo(f"Error running {repository.kind} diff: {detail}", err=True)
+        sys.exit(1)
     except Exception as exc:
         click.echo(f"Error running {repository.kind} diff: {exc}", err=True)
         sys.exit(1)

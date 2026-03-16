@@ -16,6 +16,20 @@ def _completed(stdout: str, *, args: list[str] | None = None) -> subprocess.Comp
     return subprocess.CompletedProcess(args=args or ["git"], returncode=0, stdout=stdout, stderr="")
 
 
+def _failed(
+    stderr: str,
+    *,
+    args: list[str] | None = None,
+    returncode: int = 255,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(
+        args=args or ["hg"],
+        returncode=returncode,
+        stdout="",
+        stderr=stderr,
+    )
+
+
 class GetDiffTests(unittest.TestCase):
     @patch(
         "agentreview.git.diff._get_untracked_files_diff",
@@ -89,7 +103,35 @@ class GetDiffTests(unittest.TestCase):
             [
                 unittest.mock.call(repo, ["log", "-r", "default", "--template", "{node}"]),
                 unittest.mock.call(repo, ["log", "-r", "ancestor(., 1234567890abcdef)", "--template", "{node}"]),
-                unittest.mock.call(repo, ["diff", "--git", "--from", "abcdef1234567890"]),
+                unittest.mock.call(repo, ["diff", "--git", "--from", "abcdef1234567890"], check=False),
+            ],
+        )
+        get_untracked.assert_called_once_with(repo)
+
+    @patch(
+        "agentreview.git.diff._get_untracked_files_diff",
+        return_value="diff --git a/new.txt b/new.txt",
+    )
+    @patch("agentreview.git.diff._run_hg")
+    def test_hg_commit_mode_falls_back_to_legacy_rev_flag(self, run_hg, get_untracked) -> None:
+        repo = Repository(kind="hg", root="/repo")
+        run_hg.side_effect = [
+            _failed("hg diff: option --from not recognized\n", args=["hg"]),
+            _completed("diff --git a/app.py b/app.py\n", args=["hg"]),
+        ]
+
+        diff = get_diff(repo, "commit", "abc123")
+
+        self.assertEqual(
+            diff,
+            "diff --git a/app.py b/app.py\n\n"
+            "diff --git a/new.txt b/new.txt\n",
+        )
+        self.assertEqual(
+            run_hg.call_args_list,
+            [
+                unittest.mock.call(repo, ["diff", "--git", "--from", "abc123"], check=False),
+                unittest.mock.call(repo, ["diff", "--git", "-r", "abc123"], check=False),
             ],
         )
         get_untracked.assert_called_once_with(repo)
@@ -124,6 +166,21 @@ class CliModeValidationTests(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 2)
         self.assertIn("--staged is only available in Git repositories.", result.output)
+        detect_repository.assert_called_once_with()
+
+    @patch("agentreview.cli.get_diff")
+    @patch("agentreview.cli.detect_repository", return_value=Repository(kind="hg", root="/repo"))
+    def test_surfaces_hg_stderr_when_diff_fails(self, detect_repository, get_diff_mock) -> None:
+        get_diff_mock.side_effect = subprocess.CalledProcessError(
+            255,
+            ["hg", "diff"],
+            stderr="abort: unknown revision 'abc123'",
+        )
+
+        result = CliRunner().invoke(main, ["--commit", "abc123"])
+
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn("Error running hg diff: abort: unknown revision 'abc123'", result.output)
         detect_repository.assert_called_once_with()
 
 
