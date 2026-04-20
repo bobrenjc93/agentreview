@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.next/
+*.tsbuildinfo
+.env
+.env.local
+.DS_Store
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/

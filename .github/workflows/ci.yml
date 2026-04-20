@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/cli
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Enable corepack
+        run: |
+          corepack enable
+          corepack prepare pnpm@8.15.1 --activate
+        working-directory: .
+
+      - name: Install web dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: .
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Compile sources
+        run: uv run python -m compileall src/agentreview
+
+      - name: CLI smoke test
+        run: |
+          uv run agentreview --help
+
+      - name: Build package
+        run: uv build
