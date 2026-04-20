@@ -4,7 +4,9 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
+  type ReactNode,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { type AgentReviewFile } from "@/lib/payload/types";
@@ -65,6 +67,13 @@ interface SplitPreparedChunk {
   rows: SplitRenderedRow[];
 }
 
+interface DeferredRenderBatch<T> {
+  key: string;
+  rows: T[];
+  rowCount: number;
+  rowKeys: string[];
+}
+
 interface VisibleCommentableRow {
   key: string;
   chunkIndex: number;
@@ -94,9 +103,39 @@ interface PendingCommentRange {
   endRowKey: string;
 }
 
+interface UnifiedRenderedRow {
+  type: "change" | "fold-placeholder";
+  key: string;
+  rowKey?: string;
+  preparedChange?: PreparedChange;
+  rowIndex: number;
+  oldLineNumber?: number;
+  newLineNumber?: number;
+  foldRange?: FoldRange;
+  isFolded?: boolean;
+  hiddenLineCount?: number;
+}
+
+interface DeferredRenderBlockProps {
+  blockId: string;
+  children: ReactNode;
+  estimatedHeight: number;
+  eagerOrder?: number;
+  prioritize?: boolean;
+}
+
 const CONTEXT_EXPAND_STEP = 20;
 const DARK_SHIKI_THEME = "github-dark";
 const LIGHT_SHIKI_THEME = "github-light";
+const DIFF_RENDER_BATCH_SIZE = 120;
+const DIFF_RENDER_BATCH_THRESHOLD = 240;
+const DIFF_RENDER_BATCH_ROOT_MARGIN = "1400px 0px";
+const DIFF_RENDER_BATCH_STAGGER_MS = 40;
+const DIFF_RENDER_BATCH_MAX_DELAY_MS = 640;
+const ESTIMATED_DIFF_ROW_HEIGHT = 24;
+const ESTIMATED_INLINE_COMMENT_HEIGHT = 92;
+const ESTIMATED_INLINE_COMMENT_FORM_HEIGHT = 152;
+const MAX_EAGER_TOKENIZED_LINES = 2000;
 
 function stripDiffPrefix(content: string): string {
   const marker = content[0];
@@ -104,6 +143,18 @@ function stripDiffPrefix(content: string): string {
     return content.slice(1);
   }
   return content;
+}
+
+function countLines(content: string | undefined): number {
+  if (!content) return 0;
+
+  let lineCount = 1;
+  for (let index = 0; index < content.length; index++) {
+    if (content.charCodeAt(index) === 10) {
+      lineCount += 1;
+    }
+  }
+  return lineCount;
 }
 
 function foldKey(chunkIndex: number, start: number): string {
@@ -233,6 +284,92 @@ function buildSplitRows(
   }
 
   return rows;
+}
+
+function buildUnifiedRenderedRows(
+  chunk: PreparedChunk,
+  chunkIndex: number,
+  collapsedFolds: Set<string>
+): UnifiedRenderedRow[] {
+  const rows: UnifiedRenderedRow[] = [];
+
+  for (let rowLoopIndex = 0; rowLoopIndex < chunk.changes.length; rowLoopIndex++) {
+    const rowIndex = rowLoopIndex;
+    const preparedChange = chunk.changes[rowIndex];
+    const change = preparedChange.change;
+    const rowKey = commentRowKey(chunkIndex, rowIndex);
+    const foldRange = chunk.foldRangeByStart.get(rowIndex);
+    const isFolded = !!foldRange && collapsedFolds.has(foldKey(chunkIndex, rowIndex));
+
+    rows.push({
+      type: "change",
+      key: rowKey,
+      rowKey,
+      preparedChange,
+      rowIndex,
+      oldLineNumber: getChangeOldLineNumber(change) ?? undefined,
+      newLineNumber: getChangeNewLineNumber(change) ?? undefined,
+      foldRange,
+      isFolded,
+    });
+
+    if (foldRange && isFolded) {
+      rows.push({
+        type: "fold-placeholder",
+        key: `folded-${chunkIndex}-${rowIndex}`,
+        rowIndex,
+        hiddenLineCount: foldRange.end - rowIndex,
+      });
+      rowLoopIndex = foldRange.end;
+    }
+  }
+
+  return rows;
+}
+
+function buildDeferredRenderBatches<T extends { key: string }>(
+  rows: T[],
+  batchSize: number,
+  keyPrefix: string,
+  getRowKey: (row: T) => string | undefined = (row) => row.key
+): DeferredRenderBatch<T>[] {
+  const batches: DeferredRenderBatch<T>[] = [];
+
+  for (let start = 0; start < rows.length; start += batchSize) {
+    const batchRows = rows.slice(start, start + batchSize);
+    batches.push({
+      key: `${keyPrefix}:${batches.length}`,
+      rows: batchRows,
+      rowCount: batchRows.length,
+      rowKeys: batchRows
+        .map(getRowKey)
+        .filter((rowKey): rowKey is string => !!rowKey),
+    });
+  }
+
+  return batches;
+}
+
+function estimateDeferredBatchHeight(
+  rowCount: number,
+  rowKeys: string[],
+  commentRowMap: Map<string, ReviewComment[]>,
+  activeCommentRowKey: string | undefined
+): number {
+  let commentCount = 0;
+
+  for (const rowKey of rowKeys) {
+    commentCount += commentRowMap.get(rowKey)?.length ?? 0;
+  }
+
+  const includesCommentForm =
+    !!activeCommentRowKey && rowKeys.includes(activeCommentRowKey);
+
+  return (
+    rowCount * ESTIMATED_DIFF_ROW_HEIGHT +
+    commentCount * ESTIMATED_INLINE_COMMENT_HEIGHT +
+    (includesCommentForm ? ESTIMATED_INLINE_COMMENT_FORM_HEIGHT : 0)
+  );
 }
 
 function getRowContentForSide(
@@ -412,6 +549,79 @@ function getSplitPrefixClass(
   return "text-gray-700";
 }
 
+function DeferredRenderBlock({
+  blockId,
+  children,
+  estimatedHeight,
+  eagerOrder = 0,
+  prioritize = false,
+}: DeferredRenderBlockProps) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [shouldRender, setShouldRender] = useState(prioritize);
+
+  useEffect(() => {
+    if (prioritize) {
+      setShouldRender(true);
+      return;
+    }
+
+    if (shouldRender) {
+      return;
+    }
+
+    const element = containerRef.current;
+    if (!element) {
+      return;
+    }
+
+    if (typeof IntersectionObserver === "undefined") {
+      setShouldRender(true);
+      return;
+    }
+
+    const eagerDelayMs = Math.min(
+      Math.max(0, eagerOrder) * DIFF_RENDER_BATCH_STAGGER_MS,
+      DIFF_RENDER_BATCH_MAX_DELAY_MS
+    );
+    const eagerTimer = window.setTimeout(() => {
+      setShouldRender(true);
+    }, eagerDelayMs);
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setShouldRender(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: DIFF_RENDER_BATCH_ROOT_MARGIN }
+    );
+
+    observer.observe(element);
+    return () => {
+      window.clearTimeout(eagerTimer);
+      observer.disconnect();
+    };
+  }, [blockId, eagerOrder, prioritize, shouldRender]);
+
+  return (
+    <div ref={containerRef}>
+      {shouldRender ? (
+        children
+      ) : (
+        <div
+          className="flex items-center justify-center bg-gray-950/20 px-4 py-3 text-[11px] uppercase tracking-[0.18em] text-gray-600"
+          style={{ minHeight: `${Math.max(estimatedHeight, 72)}px` }}
+        >
+          <span className="rounded-full border border-gray-800 bg-gray-950/70 px-3 py-1">
+            Rendering nearby lines…
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function DiffView({
   file,
   fileId,
@@ -505,20 +715,43 @@ export function DiffView({
     [file.source]
   );
 
+  const oldSourceLineCount = useMemo(
+    () => countLines(file.oldSource),
+    [file.oldSource]
+  );
+
+  const shouldTokenizeDiff = useMemo(() => {
+    const diffLineCount = preparedChunks.reduce(
+      (total, chunk) => total + chunk.changes.length,
+      0
+    );
+
+    return (
+      diffLineCount <= MAX_EAGER_TOKENIZED_LINES &&
+      sourceLines.length <= MAX_EAGER_TOKENIZED_LINES &&
+      oldSourceLineCount <= MAX_EAGER_TOKENIZED_LINES
+    );
+  }, [oldSourceLineCount, preparedChunks, sourceLines.length]);
+
   const newSourceTokenMap = useMemo(
-    () => buildTokenLineMap(highlighter, file.source, file.language, shikiTheme),
-    [highlighter, file.source, file.language, shikiTheme]
+    () =>
+      shouldTokenizeDiff
+        ? buildTokenLineMap(highlighter, file.source, file.language, shikiTheme)
+        : null,
+    [highlighter, file.source, file.language, shikiTheme, shouldTokenizeDiff]
   );
 
   const oldSourceTokenMap = useMemo(
     () =>
-      buildTokenLineMap(
-        highlighter,
-        file.oldSource,
-        file.language,
-        shikiTheme
-      ),
-    [highlighter, file.oldSource, file.language, shikiTheme]
+      shouldTokenizeDiff
+        ? buildTokenLineMap(
+            highlighter,
+            file.oldSource,
+            file.language,
+            shikiTheme
+          )
+        : null,
+    [highlighter, file.oldSource, file.language, shikiTheme, shouldTokenizeDiff]
   );
 
   const chunkLineRanges = useMemo(
@@ -729,6 +962,7 @@ export function DiffView({
   );
 
   const fallbackTokenMap = useMemo(() => {
+    if (!shouldTokenizeDiff) return null;
     if (!highlighter || !file.language) return null;
     const loadedLangs = highlighter.getLoadedLanguages();
     if (!loadedLangs.includes(file.language)) return null;
@@ -751,7 +985,7 @@ export function DiffView({
       map.set(index, lineTokens);
     });
     return map;
-  }, [highlighter, file.language, preparedChunks, shikiTheme]);
+  }, [highlighter, file.language, preparedChunks, shikiTheme, shouldTokenizeDiff]);
 
   function getTokensForChange(
     preparedChange: PreparedChange,
@@ -855,6 +1089,64 @@ export function DiffView({
 
     return rowsByComment;
   }, [fileComments, visibleCommentableRows]);
+
+  const unifiedRenderedChunks = useMemo(
+    () =>
+      preparedChunks.map((chunk, chunkIndex) => ({
+        content: chunk.content,
+        rows: buildUnifiedRenderedRows(chunk, chunkIndex, collapsedFolds),
+      })),
+    [collapsedFolds, preparedChunks]
+  );
+
+  const unifiedRenderBatches = useMemo(
+    () =>
+      unifiedRenderedChunks.map((chunk, chunkIndex) => ({
+        content: chunk.content,
+        rows: chunk.rows,
+        batches: buildDeferredRenderBatches(
+          chunk.rows,
+          DIFF_RENDER_BATCH_SIZE,
+          `unified:${chunkIndex}`,
+          (row) => row.rowKey
+        ),
+      })),
+    [unifiedRenderedChunks]
+  );
+
+  const splitRenderBatches = useMemo(
+    () =>
+      splitChunks.map((chunk, chunkIndex) => ({
+        content: chunk.content,
+        rows: chunk.rows,
+        batches: buildDeferredRenderBatches(
+          chunk.rows,
+          DIFF_RENDER_BATCH_SIZE,
+          `split:${chunkIndex}`
+        ),
+      })),
+    [splitChunks]
+  );
+
+  const totalUnifiedRenderedRowCount = useMemo(
+    () =>
+      unifiedRenderedChunks.reduce(
+        (total, chunk) => total + chunk.rows.length,
+        0
+      ),
+    [unifiedRenderedChunks]
+  );
+
+  const totalSplitRenderedRowCount = useMemo(
+    () =>
+      splitChunks.reduce((total, chunk) => total + chunk.rows.length, 0),
+    [splitChunks]
+  );
+
+  const shouldBatchUnifiedRows =
+    totalUnifiedRenderedRowCount >= DIFF_RENDER_BATCH_THRESHOLD;
+  const shouldBatchSplitRows =
+    totalSplitRenderedRowCount >= DIFF_RENDER_BATCH_THRESHOLD;
 
   function handleStartLineSelection(
     rowKey: string,
@@ -1136,58 +1428,16 @@ export function DiffView({
     );
   }
 
-  function renderUnifiedRows(chunk: PreparedChunk, chunkIndex: number) {
-    const rows: JSX.Element[] = [];
-
-    for (let rowLoopIndex = 0; rowLoopIndex < chunk.changes.length; rowLoopIndex++) {
-      const rowIndex = rowLoopIndex;
-      const preparedChange = chunk.changes[rowIndex];
-      const change = preparedChange.change;
-      const lineContent = preparedChange.content;
-      const foldRange = chunk.foldRangeByStart.get(rowIndex);
-      const foldKeyValue = foldKey(chunkIndex, rowIndex);
-      const rowKey = commentRowKey(chunkIndex, rowIndex);
-      const isFolded = !!foldRange && collapsedFolds.has(foldKeyValue);
-
-      const oldLineNumber = getChangeOldLineNumber(change) ?? undefined;
-      const newLineNumber = getChangeNewLineNumber(change) ?? undefined;
-      const oldLineComments = getLineComments(oldLineNumber, "old");
-      const newLineComments = getLineComments(newLineNumber, "new");
-      const rowComments = commentRowMap.get(rowKey) ?? [];
-      const isSelected = selectedRowKeys.has(rowKey);
-
-      rows.push(
-        <div key={rowKey}>
-          <DiffLine
-            rowKey={rowKey}
-            change={change}
-            content={lineContent}
-            onStartLineSelection={handleStartLineSelection}
-            onExtendLineSelection={handleExtendLineSelection}
-            highlighted={oldLineComments.length > 0 || newLineComments.length > 0}
-            oldHighlighted={oldLineComments.length > 0}
-            newHighlighted={newLineComments.length > 0}
-            selected={isSelected}
-            oldSelected={isSelected && typeof oldLineNumber === "number"}
-            newSelected={isSelected && typeof newLineNumber === "number"}
-            tokens={getTokensForChange(preparedChange)}
-            foldable={!!foldRange}
-            folded={isFolded}
-            onToggleFold={
-              foldRange
-                ? () => toggleFold(chunkIndex, rowIndex)
-                : undefined
-            }
-          />
-          {renderCommentBlock(rowKey, rowComments)}
-        </div>
-      );
-
-      if (foldRange && isFolded) {
-        const hiddenLineCount = foldRange.end - rowIndex;
-        rows.push(
+  function renderUnifiedRows(
+    chunkIndex: number,
+    renderedRows: UnifiedRenderedRow[]
+  ) {
+    return renderedRows.map((row) => {
+      if (row.type === "fold-placeholder") {
+        const hiddenLineCount = row.hiddenLineCount ?? 0;
+        return (
           <div
-            key={`folded-${chunkIndex}-${rowIndex}`}
+            key={row.key}
             className="flex items-center bg-gray-950/40 font-mono text-xs leading-6 text-gray-400"
           >
             <span className="w-6 shrink-0" />
@@ -1196,22 +1446,58 @@ export function DiffView({
             <span className="w-4 shrink-0 text-center">…</span>
             <button
               type="button"
-              onClick={() => toggleFold(chunkIndex, rowIndex)}
+              onClick={() => toggleFold(chunkIndex, row.rowIndex)}
               className="flex-1 px-2 text-left hover:text-blue-300"
             >
               ... {hiddenLineCount} line{hiddenLineCount === 1 ? "" : "s"} folded
             </button>
           </div>
         );
-        rowLoopIndex = foldRange.end;
       }
-    }
 
-    return rows;
+      const preparedChange = row.preparedChange;
+      if (!preparedChange || !row.rowKey) {
+        return null;
+      }
+
+      const change = preparedChange.change;
+      const lineContent = preparedChange.content;
+      const oldLineComments = getLineComments(row.oldLineNumber, "old");
+      const newLineComments = getLineComments(row.newLineNumber, "new");
+      const rowComments = commentRowMap.get(row.rowKey) ?? [];
+      const isSelected = selectedRowKeys.has(row.rowKey);
+
+      return (
+        <div key={row.key}>
+          <DiffLine
+            rowKey={row.rowKey}
+            change={change}
+            content={lineContent}
+            onStartLineSelection={handleStartLineSelection}
+            onExtendLineSelection={handleExtendLineSelection}
+            highlighted={oldLineComments.length > 0 || newLineComments.length > 0}
+            oldHighlighted={oldLineComments.length > 0}
+            newHighlighted={newLineComments.length > 0}
+            selected={isSelected}
+            oldSelected={isSelected && typeof row.oldLineNumber === "number"}
+            newSelected={isSelected && typeof row.newLineNumber === "number"}
+            tokens={getTokensForChange(preparedChange)}
+            foldable={!!row.foldRange}
+            folded={row.isFolded}
+            onToggleFold={
+              row.foldRange
+                ? () => toggleFold(chunkIndex, row.rowIndex)
+                : undefined
+            }
+          />
+          {renderCommentBlock(row.rowKey, rowComments)}
+        </div>
+      );
+    });
   }
 
-  function renderSplitRows(chunk: SplitPreparedChunk) {
-    return chunk.rows.map((row) => {
+  function renderSplitRows(rows: SplitRenderedRow[]) {
+    return rows.map((row) => {
       const oldLineNumber = row.old
         ? getChangeOldLineNumber(row.old.change) ?? undefined
         : undefined;
@@ -1250,6 +1536,20 @@ export function DiffView({
     });
   }
 
+  function shouldPrioritizeBatch(rowKeys: string[], eagerOrder: number): boolean {
+    if (eagerOrder < 2) {
+      return true;
+    }
+
+    return rowKeys.some(
+      (rowKey) => selectedRowKeys.has(rowKey) || commentRowMap.has(rowKey)
+    );
+  }
+
+  const activeCommentRowKey = commentingRange?.endRowKey;
+  let splitBatchOrder = 0;
+  let unifiedBatchOrder = 0;
+
   return (
     <div className="overflow-hidden border border-gray-700">
       <div className="overflow-x-auto">
@@ -1261,12 +1561,32 @@ export function DiffView({
                 <div className="px-4 py-2">New</div>
               </div>
             )}
-            {splitChunks.map((chunk, chunkIndex) => (
+            {splitRenderBatches.map((chunk, chunkIndex) => (
               <div key={chunkIndex}>
                 <div className="border-b border-gray-700 bg-gray-800 px-4 py-1 font-mono text-xs text-gray-400">
                   {chunk.content}
                 </div>
-                {renderSplitRows(chunk)}
+                {shouldBatchSplitRows
+                  ? chunk.batches.map((batch) => {
+                      const batchOrder = splitBatchOrder++;
+                      return (
+                        <DeferredRenderBlock
+                          key={`${fileId}:${viewMode}:${batch.key}`}
+                          blockId={`${fileId}:${viewMode}:${batch.key}`}
+                          estimatedHeight={estimateDeferredBatchHeight(
+                            batch.rowCount,
+                            batch.rowKeys,
+                            commentRowMap,
+                            activeCommentRowKey
+                          )}
+                          eagerOrder={batchOrder}
+                          prioritize={shouldPrioritizeBatch(batch.rowKeys, batchOrder)}
+                        >
+                          {renderSplitRows(batch.rows)}
+                        </DeferredRenderBlock>
+                      );
+                    })
+                  : renderSplitRows(chunk.rows)}
               </div>
             ))}
             {preparedChunks.length === 0 && (
@@ -1275,7 +1595,7 @@ export function DiffView({
           </div>
         ) : (
           <div className="min-w-full">
-            {preparedChunks.map((chunk, chunkIndex) => (
+            {unifiedRenderBatches.map((chunk, chunkIndex) => (
               <div key={chunkIndex}>
                 {renderContextGap(chunkIndex)}
                 {!(
@@ -1287,7 +1607,27 @@ export function DiffView({
                     {chunk.content}
                   </div>
                 )}
-                {renderUnifiedRows(chunk, chunkIndex)}
+                {shouldBatchUnifiedRows
+                  ? chunk.batches.map((batch) => {
+                      const batchOrder = unifiedBatchOrder++;
+                      return (
+                        <DeferredRenderBlock
+                          key={`${fileId}:${viewMode}:${batch.key}`}
+                          blockId={`${fileId}:${viewMode}:${batch.key}`}
+                          estimatedHeight={estimateDeferredBatchHeight(
+                            batch.rowCount,
+                            batch.rowKeys,
+                            commentRowMap,
+                            activeCommentRowKey
+                          )}
+                          eagerOrder={batchOrder}
+                          prioritize={shouldPrioritizeBatch(batch.rowKeys, batchOrder)}
+                        >
+                          {renderUnifiedRows(chunkIndex, batch.rows)}
+                        </DeferredRenderBlock>
+                      );
+                    })
+                  : renderUnifiedRows(chunkIndex, chunk.rows)}
               </div>
             ))}
             {renderContextGap(preparedChunks.length)}
