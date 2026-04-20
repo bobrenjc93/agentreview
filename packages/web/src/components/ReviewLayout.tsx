@@ -94,11 +94,45 @@ const DEFERRED_DIFF_ROOT_MARGIN = "900px 0px";
 const DEFERRED_DIFF_STAGGER_MS = 80;
 const DEFERRED_DIFF_MAX_DELAY_MS = 2400;
 const BACKGROUND_FILE_DETAIL_CONCURRENCY = 4;
+const LARGE_DIFF_LINE_THRESHOLD = 1500;
+const LARGE_DIFF_CHAR_THRESHOLD = 120000;
 const APP_TITLE = "AgentReview";
 
 interface QueuedFileDetail {
   segmentId: string;
   file: AgentReviewFile;
+}
+
+interface DiffRenderStats {
+  diffLineCount: number;
+  diffCharCount: number;
+  isLargeDiff: boolean;
+}
+
+function countLines(content: string | undefined): number {
+  if (!content) return 0;
+
+  let lineCount = 1;
+  for (let index = 0; index < content.length; index++) {
+    if (content.charCodeAt(index) === 10) {
+      lineCount += 1;
+    }
+  }
+
+  return lineCount;
+}
+
+function getDiffRenderStats(file: AgentReviewFile): DiffRenderStats {
+  const diffCharCount = file.diff.length;
+  const diffLineCount = countLines(file.diff);
+
+  return {
+    diffLineCount,
+    diffCharCount,
+    isLargeDiff:
+      diffLineCount >= LARGE_DIFF_LINE_THRESHOLD ||
+      diffCharCount >= LARGE_DIFF_CHAR_THRESHOLD,
+  };
 }
 
 function getReviewDocumentTitle(payload: AgentReviewPayload): string {
@@ -272,7 +306,8 @@ function requiresFileDetails(file: AgentReviewFile): boolean {
 function buildFileDetailPrefetchQueue(
   segments: AgentReviewSegment[],
   selectedSegmentId: string | null,
-  selectedFileId: string | null
+  selectedFileId: string | null,
+  shouldEnqueueFile: (segmentId: string, file: AgentReviewFile) => boolean
 ): QueuedFileDetail[] {
   const queue: QueuedFileDetail[] = [];
   const seen = new Set<string>();
@@ -281,6 +316,9 @@ function buildFileDetailPrefetchQueue(
 
   function enqueue(segment: AgentReviewSegment, file: AgentReviewFile) {
     const fileId = getSegmentFileId(segment.id, file.path);
+    if (!shouldEnqueueFile(segment.id, file)) {
+      return;
+    }
     if (seen.has(fileId)) {
       return;
     }
@@ -416,10 +454,27 @@ export function ReviewLayout({
     {}
   );
   const fileDetailPromisesRef = useRef<Map<string, Promise<void>>>(new Map());
+  const [revealedLargeDiffFileIds, setRevealedLargeDiffFileIds] = useState<Set<string>>(
+    () => new Set()
+  );
   const baseSegments = useMemo(
     () => orderSegmentsForUi(getPayloadSegments(payload)),
     [payload]
   );
+  const diffRenderStatsByFileId = useMemo(() => {
+    const stats = new Map<string, DiffRenderStats>();
+
+    baseSegments.forEach((segment) => {
+      segment.files.forEach((file) => {
+        stats.set(
+          getSegmentFileId(segment.id, file.path),
+          getDiffRenderStats(file)
+        );
+      });
+    });
+
+    return stats;
+  }, [baseSegments]);
   const segments = useMemo(
     () =>
       baseSegments.map((segment) => ({
@@ -502,6 +557,7 @@ export function ReviewLayout({
     lazyFileDetailsRef.current = {};
     setLazyFileDetailsById({});
     setFileDetailStatusById({});
+    setRevealedLargeDiffFileIds(new Set());
     fileDetailPromisesRef.current.clear();
   }, [payload, sessionId]);
 
@@ -588,6 +644,25 @@ export function ReviewLayout({
   const visibleFilePaths = useMemo(
     () => Array.from(new Set(visibleFiles.map((file) => file.path))),
     [visibleFiles]
+  );
+  const revealLargeDiff = useCallback((fileId: string) => {
+    setRevealedLargeDiffFileIds((current) => {
+      if (current.has(fileId)) {
+        return current;
+      }
+
+      const next = new Set(current);
+      next.add(fileId);
+      return next;
+    });
+  }, []);
+  const shouldBackgroundPrefetchFileDetails = useCallback(
+    (segmentId: string, file: AgentReviewFile) => {
+      const fileId = getSegmentFileId(segmentId, file.path);
+      const stats = diffRenderStatsByFileId.get(fileId);
+      return !stats?.isLargeDiff || revealedLargeDiffFileIds.has(fileId);
+    },
+    [diffRenderStatsByFileId, revealedLargeDiffFileIds]
   );
 
   useEffect(() => {
@@ -781,7 +856,8 @@ export function ReviewLayout({
     const queue = buildFileDetailPrefetchQueue(
       baseSegments,
       selectedSegmentId,
-      selectedFileId
+      selectedFileId,
+      shouldBackgroundPrefetchFileDetails
     );
     if (queue.length === 0) {
       return;
@@ -829,6 +905,7 @@ export function ReviewLayout({
     loadFileDetails,
     selectedFileId,
     selectedSegmentId,
+    shouldBackgroundPrefetchFileDetails,
     sessionId,
   ]);
 
@@ -1712,10 +1789,17 @@ export function ReviewLayout({
                 {selectedSegment &&
                   selectedSegment.files.map((file, fileIndex) => {
                     const fileId = getSegmentFileId(selectedSegment.id, file.path);
+                    const diffRenderStats =
+                      diffRenderStatsByFileId.get(fileId) ?? getDiffRenderStats(file);
                     const isExpanded = expandedFiles.has(fileId);
                     const commentCount = commentsValue.getCommentsForFile(fileId).length;
                     const isSelected = selectedFileId === fileId;
                     const shouldPrioritizeDiff = isSelected || fileIndex < 2;
+                    const isLargeDiff = diffRenderStats.isLargeDiff;
+                    const isLargeDiffHidden =
+                      isExpanded &&
+                      isLargeDiff &&
+                      !revealedLargeDiffFileIds.has(fileId);
                     const isLoadingFileDetails =
                       fileDetailStatusById[fileId] === "loading";
                     const canCopyOldSource =
@@ -1740,7 +1824,7 @@ export function ReviewLayout({
                             type="button"
                             onClick={() => {
                               setSelectedFileId(fileId);
-                              if (!isExpanded) {
+                              if (!isExpanded && !isLargeDiff) {
                                 void ensureFileDetails(selectedSegment.id, file).catch(() => {});
                               }
                               setFilePathExpanded(file.path, !isExpanded);
@@ -1880,7 +1964,33 @@ export function ReviewLayout({
                           </div>
                         </div>
 
-                        {isExpanded && (
+                        {isLargeDiffHidden ? (
+                          <div className="border-t border-gray-800 bg-gray-950/50 px-4 py-4">
+                            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                              <div className="min-w-0">
+                                <p className="text-sm font-medium text-gray-200">
+                                  Large diff hidden by default
+                                </p>
+                                <p className="mt-1 text-sm text-gray-400">
+                                  {diffRenderStats.diffLineCount.toLocaleString()} diff line
+                                  {diffRenderStats.diffLineCount === 1 ? "" : "s"} and{" "}
+                                  {diffRenderStats.diffCharCount.toLocaleString()} characters.
+                                  Load it only when you need to inspect this file.
+                                </p>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedFileId(fileId);
+                                  revealLargeDiff(fileId);
+                                }}
+                                className="shrink-0 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-3 py-2 text-sm font-medium text-cyan-100 transition-colors hover:bg-cyan-500/20"
+                              >
+                                Load diff
+                              </button>
+                            </div>
+                          </div>
+                        ) : isExpanded && (
                           <DeferredDiff
                             fileId={fileId}
                             eagerOrder={fileIndex}
