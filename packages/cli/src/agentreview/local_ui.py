@@ -20,7 +20,7 @@ from urllib.parse import parse_qs, parse_qsl, unquote, urlencode, urlsplit, urlu
 from uuid import uuid4
 import webbrowser
 
-from .payload.types import AgentReviewPayload
+from .payload.types import AgentReviewFile, AgentReviewPayload
 
 LOCAL_SERVER_HOST = "127.0.0.1"
 LOCAL_SERVER_START_PORT = 44102
@@ -35,6 +35,7 @@ LOCAL_FALLBACK_SEGMENT_ID = "all-changes"
 LOCAL_CACHE_BUSTER_QUERY_KEY = "agentreviewSession"
 ProgressReporter = Callable[[str], None]
 RefreshPayload = Callable[[ProgressReporter | None], AgentReviewPayload]
+LocalFileKey = tuple[str, str]
 
 
 class LocalUiError(RuntimeError):
@@ -54,8 +55,8 @@ def _build_local_payload_response(
     payload: AgentReviewPayload,
     *,
     session_id: str,
-) -> tuple[bytes, dict[tuple[str, str], bytes]]:
-    manifest_payload, file_response_by_key = _build_local_payload_manifest(payload)
+) -> tuple[bytes, dict[LocalFileKey, AgentReviewFile]]:
+    manifest_payload, file_by_key = _build_local_payload_manifest(payload)
     payload_response = json.dumps(
         {
             "payload": manifest_payload,
@@ -63,21 +64,40 @@ def _build_local_payload_response(
         },
         separators=(",", ":"),
     ).encode("utf-8")
-    return payload_response, file_response_by_key
+    return payload_response, file_by_key
 
 
 @dataclass
 class _LocalReviewSessionState:
     session_id: str
     payload_response: bytes
-    file_response_by_key: dict[tuple[str, str], bytes]
+    file_by_key: dict[LocalFileKey, AgentReviewFile]
     refresh_payload: RefreshPayload | None = None
     progress: ProgressReporter | None = None
+    _file_response_cache_by_key: dict[LocalFileKey, bytes] = field(default_factory=dict)
     _lock: Lock = field(default_factory=Lock)
 
-    def get_snapshot(self) -> tuple[str, bytes, dict[tuple[str, str], bytes]]:
+    def get_snapshot(self) -> tuple[str, bytes, dict[LocalFileKey, AgentReviewFile]]:
         with self._lock:
-            return self.session_id, self.payload_response, self.file_response_by_key
+            return self.session_id, self.payload_response, self.file_by_key
+
+    def get_file_response(self, segment_id: str, path: str) -> bytes | None:
+        key = (segment_id, path)
+        with self._lock:
+            cached_response = self._file_response_cache_by_key.get(key)
+            if cached_response is not None:
+                return cached_response
+
+            file = self.file_by_key.get(key)
+            if file is None:
+                return None
+
+            response = json.dumps(
+                _build_file_details_response(file),
+                separators=(",", ":"),
+            ).encode("utf-8")
+            self._file_response_cache_by_key[key] = response
+            return response
 
     def refresh(self) -> tuple[str, bytes]:
         if self.refresh_payload is None:
@@ -93,7 +113,8 @@ class _LocalReviewSessionState:
             )
             self.session_id = session_id
             self.payload_response = payload_response
-            self.file_response_by_key = file_response_by_key
+            self.file_by_key = file_response_by_key
+            self._file_response_cache_by_key = {}
 
         _report_progress(self.progress, "Local review refresh is ready.")
         return session_id, payload_response
@@ -164,7 +185,7 @@ class _LocalUiRequestHandler(SimpleHTTPRequestHandler):
         split = urlsplit(self.path)
         if split.path != LOCAL_FILE_ENDPOINT:
             return False
-        session_id, _, file_response_by_key = self._session_state.get_snapshot()
+        session_id, _, _ = self._session_state.get_snapshot()
         if not self._is_valid_session_request(
             split.query,
             session_id=session_id,
@@ -183,7 +204,7 @@ class _LocalUiRequestHandler(SimpleHTTPRequestHandler):
             )
             return True
 
-        response = file_response_by_key.get((segment_id, path))
+        response = self._session_state.get_file_response(segment_id, path)
         if response is None:
             self._send_json_error(
                 HTTPStatus.NOT_FOUND,
@@ -338,14 +359,14 @@ def _serve_static_site(
 
     session_id = _new_local_session_id()
     _report_progress(progress, "Preparing the local review payload.")
-    payload_response, file_response_by_key = _build_local_payload_response(
+    payload_response, file_by_key = _build_local_payload_response(
         payload,
         session_id=session_id,
     )
     session_state = _LocalReviewSessionState(
         session_id=session_id,
         payload_response=payload_response,
-        file_response_by_key=file_response_by_key,
+        file_by_key=file_by_key,
         refresh_payload=refresh_payload,
         progress=progress,
     )
@@ -549,53 +570,65 @@ def _extract_site_archive(archive_path: Path, destination: Path) -> None:
 
 def _build_local_payload_manifest(
     payload: AgentReviewPayload,
-) -> tuple[dict, dict[tuple[str, str], bytes]]:
-    manifest = payload.to_dict()
-    file_response_by_key: dict[tuple[str, str], bytes] = {}
+) -> tuple[dict, dict[LocalFileKey, AgentReviewFile]]:
+    manifest = {
+        "version": payload.version,
+        "meta": payload.meta.to_dict() if payload.meta else {},
+        "files": [],
+    }
+    file_by_key: dict[LocalFileKey, AgentReviewFile] = {}
 
     if payload.segments:
-        manifest["files"] = []
         manifest["segments"] = [
-            _build_local_segment_manifest(segment, file_response_by_key)
+            _build_local_segment_manifest(segment, file_by_key)
             for segment in payload.segments
         ]
-        return manifest, file_response_by_key
+        return manifest, file_by_key
 
     manifest["files"] = [
         _build_local_file_manifest(
             LOCAL_FALLBACK_SEGMENT_ID,
             file,
-            file_response_by_key,
+            file_by_key,
         )
         for file in payload.files
     ]
-    return manifest, file_response_by_key
+    return manifest, file_by_key
 
 
 def _build_local_segment_manifest(
     segment,
-    file_response_by_key: dict[tuple[str, str], bytes],
+    file_by_key: dict[LocalFileKey, AgentReviewFile],
 ) -> dict:
-    manifest = segment.to_dict()
-    manifest["files"] = [
-        _build_local_file_manifest(segment.id, file, file_response_by_key)
-        for file in segment.files
-    ]
+    manifest = {
+        "id": segment.id,
+        "label": segment.label,
+        "kind": segment.kind,
+        "files": [
+            _build_local_file_manifest(segment.id, file, file_by_key)
+            for file in segment.files
+        ],
+    }
+    if segment.commit_hash is not None:
+        manifest["commitHash"] = segment.commit_hash
+    if segment.commit_message is not None:
+        manifest["commitMessage"] = segment.commit_message
     return manifest
 
 
 def _build_local_file_manifest(
     segment_id: str,
     file,
-    file_response_by_key: dict[tuple[str, str], bytes],
+    file_by_key: dict[LocalFileKey, AgentReviewFile],
 ) -> dict:
-    file_response_by_key[(segment_id, file.path)] = json.dumps(
-        _build_file_details_response(file),
-        separators=(",", ":"),
-    ).encode("utf-8")
-    manifest = file.to_dict()
-    manifest.pop("source", None)
-    manifest.pop("oldSource", None)
+    file_by_key[(segment_id, file.path)] = file
+    manifest = {
+        "path": file.path,
+        "status": file.status,
+        "diff": file.diff,
+    }
+    if file.language is not None:
+        manifest["language"] = file.language
     return manifest
 
 

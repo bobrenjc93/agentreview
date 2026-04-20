@@ -1236,14 +1236,18 @@ class LocalUiTests(unittest.TestCase):
             ],
         )
 
-        manifest, file_response_by_key = _build_local_payload_manifest(payload)
+        manifest, file_by_key = _build_local_payload_manifest(payload)
 
         self.assertEqual(len(manifest["files"]), 1)
         self.assertNotIn("source", manifest["files"][0])
         self.assertNotIn("oldSource", manifest["files"][0])
         self.assertEqual(
-            file_response_by_key[(LOCAL_FALLBACK_SEGMENT_ID, "app.py")],
-            b'{"source":"print(\'new\')\\n","oldSource":"print(\'old\')\\n"}',
+            file_by_key[(LOCAL_FALLBACK_SEGMENT_ID, "app.py")].source,
+            "print('new')\n",
+        )
+        self.assertEqual(
+            file_by_key[(LOCAL_FALLBACK_SEGMENT_ID, "app.py")].old_source,
+            "print('old')\n",
         )
 
     def test_build_local_payload_manifest_drops_duplicate_root_files_when_segments_exist(self) -> None:
@@ -1288,13 +1292,13 @@ class LocalUiTests(unittest.TestCase):
             ],
         )
 
-        manifest, file_response_by_key = _build_local_payload_manifest(payload)
+        manifest, file_by_key = _build_local_payload_manifest(payload)
 
         self.assertEqual(manifest["files"], [])
         self.assertEqual(len(manifest["segments"]), 1)
         self.assertNotIn("source", manifest["segments"][0]["files"][0])
         self.assertNotIn("oldSource", manifest["segments"][0]["files"][0])
-        self.assertIn(("commit:abc123", "app.py"), file_response_by_key)
+        self.assertIn(("commit:abc123", "app.py"), file_by_key)
 
     def test_local_review_session_state_refresh_replaces_payload_and_session(self) -> None:
         initial_payload = AgentReviewPayload(
@@ -1333,19 +1337,19 @@ class LocalUiTests(unittest.TestCase):
                 )
             ],
         )
-        payload_response, file_response_by_key = _build_local_payload_response(
+        payload_response, file_by_key = _build_local_payload_response(
             initial_payload,
             session_id="local-initial",
         )
         session_state = _LocalReviewSessionState(
             session_id="local-initial",
             payload_response=payload_response,
-            file_response_by_key=file_response_by_key,
+            file_by_key=file_by_key,
             refresh_payload=lambda progress=None: refreshed_payload,
         )
 
         next_session_id, next_payload_response = session_state.refresh()
-        current_session_id, current_payload_response, current_file_response_by_key = (
+        current_session_id, current_payload_response, current_file_by_key = (
             session_state.get_snapshot()
         )
 
@@ -1356,7 +1360,7 @@ class LocalUiTests(unittest.TestCase):
             json.loads(next_payload_response.decode("utf-8"))["payload"]["meta"]["commitHash"],
             "def456",
         )
-        self.assertIn((LOCAL_FALLBACK_SEGMENT_ID, "after.py"), current_file_response_by_key)
+        self.assertIn((LOCAL_FALLBACK_SEGMENT_ID, "after.py"), current_file_by_key)
 
 
 class MetadataTests(unittest.TestCase):

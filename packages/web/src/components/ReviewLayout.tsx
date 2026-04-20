@@ -517,11 +517,6 @@ export function ReviewLayout({
   const commentsValue = useCommentsProvider(sessionId);
   const commentsCount = commentsValue.comments.length;
   const exportCopyResetTimersRef = useRef<Map<string, number>>(new Map());
-  const allCommentsExportText = useMemo(
-    () => generateExportPrompt(payload, commentsValue.comments),
-    [commentsValue.comments, payload]
-  );
-  const fullDiffExportText = useMemo(() => generateExportDiff(payload), [payload]);
 
   useEffect(() => {
     document.title = getReviewDocumentTitle(payload);
@@ -947,8 +942,11 @@ export function ReviewLayout({
 
   const copyAllComments = useCallback(async () => {
     if (commentsCount === 0) return;
-    await copyExportText(allCommentsExportText, ALL_COMMENTS_EXPORT_ID);
-  }, [allCommentsExportText, commentsCount, copyExportText]);
+    await copyExportText(
+      generateExportPrompt(payload, commentsValue.comments),
+      ALL_COMMENTS_EXPORT_ID
+    );
+  }, [commentsCount, commentsValue.comments, copyExportText, payload]);
 
   const copySelectedComments = useCallback(
     async (comments: ReviewComment[], actionId: string) => {
@@ -959,8 +957,8 @@ export function ReviewLayout({
   );
 
   const copyFullDiff = useCallback(async () => {
-    await copyExportText(fullDiffExportText, FULL_DIFF_EXPORT_ID);
-  }, [copyExportText, fullDiffExportText]);
+    await copyExportText(generateExportDiff(payload), FULL_DIFF_EXPORT_ID);
+  }, [copyExportText, payload]);
 
   const closePanels = useCallback(() => {
     setHotkeysOpen(false);

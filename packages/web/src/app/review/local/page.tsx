@@ -211,7 +211,6 @@ export default function LocalReviewPage() {
 
   return (
     <ReviewLayout
-      key={sessionId}
       payload={payload}
       sessionId={sessionId}
       loadFileDetails={loadFileDetails}
