@@ -77,7 +77,9 @@ const HOTKEYS: Array<{ key: string; description: string }> = [
 
 const DEFAULT_SIDEBAR_WIDTH = 320;
 const MIN_SIDEBAR_WIDTH = 260;
-const MAX_SIDEBAR_WIDTH = 520;
+const BASE_MAX_SIDEBAR_WIDTH = 520;
+const MIN_MAIN_PANE_WIDTH = 320;
+const EXPANDED_SIDEBAR_WIDTH_RATIO = 0.5;
 const DEFAULT_SEGMENTS_PANE_HEIGHT = 320;
 const MIN_SEGMENTS_PANE_HEIGHT = 180;
 const MIN_FILES_PANE_HEIGHT = 180;
@@ -226,12 +228,18 @@ function getSegmentCommentSectionLabel(segment: AgentReviewSegment): string {
 
 function clampSidebarWidth(width: number): number {
   if (typeof window === "undefined") {
-    return Math.max(MIN_SIDEBAR_WIDTH, Math.min(width, MAX_SIDEBAR_WIDTH));
+    return Math.max(MIN_SIDEBAR_WIDTH, Math.min(width, BASE_MAX_SIDEBAR_WIDTH));
   }
 
+  const proportionalMax = Math.floor(
+    window.innerWidth * EXPANDED_SIDEBAR_WIDTH_RATIO
+  );
   const dynamicMax = Math.max(
     MIN_SIDEBAR_WIDTH,
-    Math.min(MAX_SIDEBAR_WIDTH, window.innerWidth - 320)
+    Math.min(
+      Math.max(MIN_SIDEBAR_WIDTH, window.innerWidth - MIN_MAIN_PANE_WIDTH),
+      Math.max(BASE_MAX_SIDEBAR_WIDTH, proportionalMax)
+    )
   );
   return Math.max(MIN_SIDEBAR_WIDTH, Math.min(width, dynamicMax));
 }
