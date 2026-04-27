@@ -18,7 +18,10 @@ import { InlineComment } from "./InlineComment";
 import { useTheme } from "./ThemeProvider";
 import { useComments } from "@/hooks/useComments";
 import { useHighlighter, type ThemedToken } from "@/hooks/useHighlighter";
-import { type BundledLanguage } from "shiki";
+import {
+  canHighlightLanguage,
+  highlightCodeLines,
+} from "@/lib/highlighting";
 import {
   commentEndsOnLine,
   formatCommentRangeFromParts,
@@ -135,7 +138,8 @@ const DIFF_RENDER_BATCH_MAX_DELAY_MS = 640;
 const ESTIMATED_DIFF_ROW_HEIGHT = 24;
 const ESTIMATED_INLINE_COMMENT_HEIGHT = 92;
 const ESTIMATED_INLINE_COMMENT_FORM_HEIGHT = 152;
-const MAX_EAGER_TOKENIZED_LINES = 2000;
+const MAX_SOURCE_CONTEXT_TOKENIZED_LINES = 8000;
+const MAX_DIFF_TOKENIZED_LINES = 12000;
 
 function stripDiffPrefix(content: string): string {
   const marker = content[0];
@@ -201,18 +205,15 @@ function buildTokenLineMap(
   language: string | undefined,
   shikiTheme: string
 ): Map<number, ThemedToken[]> | null {
-  if (!highlighter || !language || code == null) return null;
-  if (!highlighter.getLoadedLanguages().includes(language as BundledLanguage)) {
-    return null;
-  }
+  if (code == null) return null;
+  const tokenLines = highlightCodeLines(highlighter, code, language, shikiTheme);
+  if (!tokenLines) return null;
 
-  const result = highlighter.codeToTokens(code, {
-    lang: language as BundledLanguage,
-    theme: shikiTheme,
-  });
   const map = new Map<number, ThemedToken[]>();
-  result.tokens.forEach((lineTokens, index) => {
-    map.set(index + 1, lineTokens);
+  tokenLines.forEach((lineTokens, index) => {
+    if (lineTokens) {
+      map.set(index + 1, lineTokens);
+    }
   });
   return map;
 }
@@ -720,30 +721,38 @@ export function DiffView({
     [file.oldSource]
   );
 
-  const shouldTokenizeDiff = useMemo(() => {
-    const diffLineCount = preparedChunks.reduce(
-      (total, chunk) => total + chunk.changes.length,
-      0
-    );
+  const diffLineCount = useMemo(
+    () =>
+      preparedChunks.reduce(
+        (total, chunk) => total + chunk.changes.length,
+        0
+      ),
+    [preparedChunks]
+  );
 
-    return (
-      diffLineCount <= MAX_EAGER_TOKENIZED_LINES &&
-      sourceLines.length <= MAX_EAGER_TOKENIZED_LINES &&
-      oldSourceLineCount <= MAX_EAGER_TOKENIZED_LINES
-    );
-  }, [oldSourceLineCount, preparedChunks, sourceLines.length]);
+  const shouldTokenizeSourceContext = useMemo(
+    () =>
+      sourceLines.length <= MAX_SOURCE_CONTEXT_TOKENIZED_LINES &&
+      oldSourceLineCount <= MAX_SOURCE_CONTEXT_TOKENIZED_LINES,
+    [oldSourceLineCount, sourceLines.length]
+  );
+
+  const shouldTokenizeDiffFallback = useMemo(
+    () => diffLineCount <= MAX_DIFF_TOKENIZED_LINES,
+    [diffLineCount]
+  );
 
   const newSourceTokenMap = useMemo(
     () =>
-      shouldTokenizeDiff
+      shouldTokenizeSourceContext
         ? buildTokenLineMap(highlighter, file.source, file.language, shikiTheme)
         : null,
-    [highlighter, file.source, file.language, shikiTheme, shouldTokenizeDiff]
+    [highlighter, file.source, file.language, shikiTheme, shouldTokenizeSourceContext]
   );
 
   const oldSourceTokenMap = useMemo(
     () =>
-      shouldTokenizeDiff
+      shouldTokenizeSourceContext
         ? buildTokenLineMap(
             highlighter,
             file.oldSource,
@@ -751,7 +760,7 @@ export function DiffView({
             shikiTheme
           )
         : null,
-    [highlighter, file.oldSource, file.language, shikiTheme, shouldTokenizeDiff]
+    [highlighter, file.oldSource, file.language, shikiTheme, shouldTokenizeSourceContext]
   );
 
   const chunkLineRanges = useMemo(
@@ -962,10 +971,8 @@ export function DiffView({
   );
 
   const fallbackTokenMap = useMemo(() => {
-    if (!shouldTokenizeDiff) return null;
-    if (!highlighter || !file.language) return null;
-    const loadedLangs = highlighter.getLoadedLanguages();
-    if (!loadedLangs.includes(file.language)) return null;
+    if (!shouldTokenizeDiffFallback) return null;
+    if (!canHighlightLanguage(highlighter, file.language)) return null;
 
     const lines: string[] = [];
     for (const chunk of preparedChunks) {
@@ -975,17 +982,28 @@ export function DiffView({
     }
 
     const fullText = lines.join("\n");
-    const result = highlighter.codeToTokens(fullText, {
-      lang: file.language as BundledLanguage,
-      theme: shikiTheme,
-    });
+    const tokenLines = highlightCodeLines(
+      highlighter,
+      fullText,
+      file.language,
+      shikiTheme
+    );
+    if (!tokenLines) return null;
 
     const map = new Map<number, ThemedToken[]>();
-    result.tokens.forEach((lineTokens, index) => {
-      map.set(index, lineTokens);
+    tokenLines.forEach((lineTokens, index) => {
+      if (lineTokens) {
+        map.set(index, lineTokens);
+      }
     });
     return map;
-  }, [highlighter, file.language, preparedChunks, shikiTheme, shouldTokenizeDiff]);
+  }, [
+    highlighter,
+    file.language,
+    preparedChunks,
+    shikiTheme,
+    shouldTokenizeDiffFallback,
+  ]);
 
   function getTokensForChange(
     preparedChange: PreparedChange,

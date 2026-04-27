@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useHighlighter } from "@/hooks/useHighlighter";
 import { buildFoldRanges } from "@/lib/folding";
-import { type BundledLanguage } from "shiki";
+import { highlightCodeLines } from "@/lib/highlighting";
 import { useTheme } from "./ThemeProvider";
 
 interface CodeBlockProps {
@@ -25,14 +25,7 @@ export function CodeBlock({ code, language }: CodeBlockProps) {
   const shikiTheme = theme === "light" ? "github-light" : "github-dark";
 
   const tokenLines = useMemo(() => {
-    if (!highlighter || !language) return null;
-    if (!highlighter.getLoadedLanguages().includes(language as BundledLanguage)) {
-      return null;
-    }
-    return highlighter.codeToTokens(code, {
-      lang: language as BundledLanguage,
-      theme: shikiTheme,
-    }).tokens;
+    return highlightCodeLines(highlighter, code, language, shikiTheme);
   }, [highlighter, code, language, shikiTheme]);
 
   useEffect(() => {

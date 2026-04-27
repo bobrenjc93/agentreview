@@ -1,6 +1,6 @@
 [project]
 name = "agentreview"
-version = "0.1.45"
+version = "0.1.46"
 description = "Generate LLM-friendly code review payloads from git or sl diffs"
 requires-python = ">=3.10"
 dependencies = [
