@@ -1781,6 +1781,7 @@ export function ReviewLayout({
                               onEdit={commentsValue.updateComment}
                               onDelete={commentsValue.removeComment}
                               onRetryAgent={commentsValue.retryAgentReply}
+                              onAskAgentFollowUp={commentsValue.askAgentFollowUp}
                             />
                           ))}
                         </div>

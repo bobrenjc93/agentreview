@@ -2,7 +2,11 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { ReviewLayout } from "@/components/ReviewLayout";
-import { isAgentReplySegment, type AgentReplyResult } from "@/lib/comments/agent";
+import {
+  isAgentReplySegment,
+  type AgentReplyResult,
+  type RunAgentOptions,
+} from "@/lib/comments/agent";
 import { type AgentReviewPayload } from "@/lib/payload/types";
 import { asPayload } from "@/lib/payload/validate";
 
@@ -153,47 +157,106 @@ export default function LocalReviewPage() {
   );
 
   const runAgent = useCallback(
-    async (prompt: string): Promise<AgentReplyResult> => {
+    async (prompt: string, options?: RunAgentOptions): Promise<AgentReplyResult> => {
       const response = await fetch(
         buildLocalEndpointUrl(LOCAL_AGENT_ENDPOINT, sessionId),
         {
           cache: "no-store",
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt }),
+          body: JSON.stringify({
+            prompt,
+            resumeSessionId: options?.resumeSessionId,
+          }),
         }
       );
-      const data = (await response.json()) as {
-        response?: unknown;
-        segments?: unknown;
-        model?: unknown;
-        durationMs?: unknown;
-        costUsd?: unknown;
-        error?: unknown;
-      };
 
-      if (!response.ok) {
-        throw new Error(
-          typeof data.error === "string"
-            ? data.error
-            : "The agent request failed."
-        );
+      if (!response.ok || !response.body) {
+        let message = "The agent request failed.";
+        try {
+          const data = (await response.json()) as { error?: unknown };
+          if (typeof data.error === "string") message = data.error;
+        } catch {
+          // not JSON; keep the generic message
+        }
+        throw new Error(message);
       }
 
-      if (typeof data.response !== "string") {
-        throw new Error("The agent response was invalid.");
-      }
+      // The endpoint streams NDJSON: segment events, then one done/error line.
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffered = "";
+      let result: AgentReplyResult | null = null;
+      let streamError: string | null = null;
 
-      return {
-        response: data.response,
-        segments: Array.isArray(data.segments)
-          ? data.segments.filter(isAgentReplySegment)
-          : undefined,
-        model: typeof data.model === "string" ? data.model : undefined,
-        durationMs:
-          typeof data.durationMs === "number" ? data.durationMs : undefined,
-        costUsd: typeof data.costUsd === "number" ? data.costUsd : undefined,
+      const handleLine = (line: string) => {
+        if (!line.trim()) return;
+        let event: {
+          type?: unknown;
+          segment?: unknown;
+          result?: unknown;
+          error?: unknown;
+        };
+        try {
+          event = JSON.parse(line);
+        } catch {
+          return;
+        }
+
+        if (event.type === "segment" && isAgentReplySegment(event.segment)) {
+          options?.onSegment?.(event.segment);
+        } else if (event.type === "error") {
+          streamError =
+            typeof event.error === "string" ? event.error : "The agent run failed.";
+        } else if (
+          event.type === "done" &&
+          event.result &&
+          typeof event.result === "object"
+        ) {
+          const data = event.result as {
+            response?: unknown;
+            segments?: unknown;
+            model?: unknown;
+            durationMs?: unknown;
+            costUsd?: unknown;
+            sessionId?: unknown;
+          };
+          if (typeof data.response === "string") {
+            result = {
+              response: data.response,
+              segments: Array.isArray(data.segments)
+                ? data.segments.filter(isAgentReplySegment)
+                : undefined,
+              model: typeof data.model === "string" ? data.model : undefined,
+              durationMs:
+                typeof data.durationMs === "number" ? data.durationMs : undefined,
+              costUsd: typeof data.costUsd === "number" ? data.costUsd : undefined,
+              sessionId:
+                typeof data.sessionId === "string" ? data.sessionId : undefined,
+            };
+          }
+        }
       };
+
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffered += decoder.decode(value, { stream: true });
+        const lines = buffered.split("\n");
+        buffered = lines.pop() ?? "";
+        for (const line of lines) {
+          handleLine(line);
+        }
+      }
+      handleLine(buffered);
+
+      if (streamError) {
+        throw new Error(streamError);
+      }
+      if (!result) {
+        throw new Error("The agent stream ended without a result.");
+      }
+      return result;
     },
     [sessionId]
   );

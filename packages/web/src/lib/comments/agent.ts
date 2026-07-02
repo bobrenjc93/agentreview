@@ -1,4 +1,5 @@
 import {
+  type CommentAgentExchange,
   type ReviewComment,
   formatReviewCommentRange,
   getCommentLineContents,
@@ -18,6 +19,7 @@ export interface AgentReplyResult {
   model?: string;
   durationMs?: number;
   costUsd?: number;
+  sessionId?: string;
 }
 
 export function isAgentReplySegment(value: unknown): value is AgentReplySegment {
@@ -28,7 +30,17 @@ export function isAgentReplySegment(value: unknown): value is AgentReplySegment 
   return false;
 }
 
-export type RunAgent = (prompt: string) => Promise<AgentReplyResult>;
+export interface RunAgentOptions {
+  /** Continue a prior claude session so follow-ups keep their context. */
+  resumeSessionId?: string;
+  /** Called with each segment as the agent produces it. */
+  onSegment?: (segment: AgentReplySegment) => void;
+}
+
+export type RunAgent = (
+  prompt: string,
+  options?: RunAgentOptions
+) => Promise<AgentReplyResult>;
 
 const MAX_AGENT_CONTEXT_CHARS = 48_000;
 
@@ -78,3 +90,40 @@ export function buildAgentPrompt(
 
   return sections.join("\n\n");
 }
+
+/**
+ * Prompt for a follow-up reply in an existing thread. When the agent session
+ * can be resumed (claude --resume) only the new question is needed; otherwise
+ * the prior conversation is replayed inline.
+ */
+export function buildFollowUpPrompt(
+  comment: ReviewComment,
+  question: string,
+  options: { canResume: boolean; diffContext?: string }
+): string {
+  if (options.canResume) {
+    return `The reviewer replied to your last answer:\n\n${question}\n\nRespond directly and concisely.`;
+  }
+
+  const sections: string[] = [buildAgentPrompt(comment, options.diffContext)];
+
+  if (comment.agentReply) {
+    sections.push(`You previously replied:\n${comment.agentReply}`);
+  }
+  for (const exchange of comment.agentReplies ?? []) {
+    if (exchange.status !== "done") continue;
+    sections.push(`The reviewer then said:\n${exchange.question}`);
+    if (exchange.reply) {
+      sections.push(`You replied:\n${exchange.reply}`);
+    }
+  }
+
+  sections.push(
+    `The reviewer now replies:\n${question}`,
+    "Respond directly and concisely to this latest reply."
+  );
+
+  return sections.join("\n\n");
+}
+
+export type { CommentAgentExchange };

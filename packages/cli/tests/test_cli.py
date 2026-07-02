@@ -1373,6 +1373,23 @@ class LocalUiTests(unittest.TestCase):
         self.assertIn((LOCAL_FALLBACK_SEGMENT_ID, "after.py"), current_file_by_key)
 
 
+class _FakeAgentProcess:
+    def __init__(self, stdout: str, stderr: str = "", returncode: int = 0) -> None:
+        self.stdout = StringIO(stdout)
+        self.stderr = StringIO(stderr)
+        self.returncode = returncode
+        self.killed = False
+
+    def wait(self, timeout: float | None = None) -> int:
+        return self.returncode
+
+    def poll(self) -> int:
+        return self.returncode
+
+    def kill(self) -> None:
+        self.killed = True
+
+
 class LocalAgentTests(unittest.TestCase):
     @patch("agentreview.local_ui.load_persisted_settings", return_value={})
     def test_default_agent_model_is_opus(self, load_settings_mock) -> None:
@@ -1464,12 +1481,14 @@ class LocalAgentTests(unittest.TestCase):
         with self.assertRaises(LocalUiError):
             session_state.update_settings({"agent": "gemini", "model": "x"})
 
-    @patch("agentreview.local_ui._run_codex_agent")
-    @patch("agentreview.local_ui._run_claude_agent")
+    @patch("agentreview.local_ui._stream_codex_agent")
+    @patch("agentreview.local_ui._stream_claude_agent")
     def test_run_agent_dispatches_to_codex_backend(
-        self, run_claude_mock, run_codex_mock
+        self, stream_claude_mock, stream_codex_mock
     ) -> None:
-        run_codex_mock.return_value = {"response": "from codex"}
+        stream_codex_mock.return_value = iter(
+            [{"type": "done", "result": {"response": "from codex"}}]
+        )
         session_state = _LocalReviewSessionState(
             session_id="local-test",
             payload_response=b"{}",
@@ -1480,8 +1499,8 @@ class LocalAgentTests(unittest.TestCase):
 
         result = session_state.run_agent("hello")
 
-        run_codex_mock.assert_called_once_with("hello", "gpt-5.1-codex")
-        run_claude_mock.assert_not_called()
+        stream_codex_mock.assert_called_once_with("hello", "gpt-5.1-codex")
+        stream_claude_mock.assert_not_called()
         self.assertEqual(result["response"], "from codex")
 
     def test_parse_codex_stream_extracts_text_and_tool_segments(self) -> None:
@@ -1556,9 +1575,9 @@ class LocalAgentTests(unittest.TestCase):
             ],
         )
 
-    @patch("agentreview.local_ui.subprocess.run")
+    @patch("agentreview.local_ui.subprocess.Popen")
     @patch("agentreview.local_ui.shutil.which", return_value="/usr/bin/codex")
-    def test_run_codex_agent_invokes_codex_exec(self, which_mock, run_mock) -> None:
+    def test_run_codex_agent_invokes_codex_exec(self, which_mock, popen_mock) -> None:
         stream = "\n".join(
             [
                 json.dumps({"type": "thread.started", "thread_id": "thread-1"}),
@@ -1571,16 +1590,11 @@ class LocalAgentTests(unittest.TestCase):
                 json.dumps({"type": "turn.completed", "usage": {}}),
             ]
         )
-        run_mock.return_value = subprocess.CompletedProcess(
-            args=["codex"],
-            returncode=0,
-            stdout=stream,
-            stderr="",
-        )
+        popen_mock.return_value = _FakeAgentProcess(stream + "\n")
 
         result = _run_codex_agent("is this ok?", "gpt-5.1-codex")
 
-        command = run_mock.call_args.args[0]
+        command = popen_mock.call_args.args[0]
         self.assertEqual(command[1:3], ["exec", "--json"])
         self.assertEqual(command[command.index("--model") + 1], "gpt-5.1-codex")
         self.assertEqual(command[-1], "is this ok?")
@@ -1659,9 +1673,9 @@ class LocalAgentTests(unittest.TestCase):
             ],
         )
 
-    @patch("agentreview.local_ui.subprocess.run")
+    @patch("agentreview.local_ui.subprocess.Popen")
     @patch("agentreview.local_ui.shutil.which", return_value="/usr/bin/claude")
-    def test_run_claude_agent_invokes_claude_p_with_model(self, which_mock, run_mock) -> None:
+    def test_run_claude_agent_invokes_claude_p_with_model(self, which_mock, popen_mock) -> None:
         stream = "\n".join(
             [
                 json.dumps({"type": "system", "subtype": "init", "session_id": "sess-1"}),
@@ -1685,16 +1699,11 @@ class LocalAgentTests(unittest.TestCase):
                 ),
             ]
         )
-        run_mock.return_value = subprocess.CompletedProcess(
-            args=["claude"],
-            returncode=0,
-            stdout=stream,
-            stderr="",
-        )
+        popen_mock.return_value = _FakeAgentProcess(stream + "\n")
 
         result = _run_claude_agent("Why is this loop O(n^2)?", "claude-opus-4-8")
 
-        command = run_mock.call_args.args[0]
+        command = popen_mock.call_args.args[0]
         self.assertEqual(command[1:3], ["-p", "Why is this loop O(n^2)?"])
         self.assertIn("stream-json", command)
         self.assertEqual(command[command.index("--model") + 1], "claude-opus-4-8")
@@ -1710,14 +1719,11 @@ class LocalAgentTests(unittest.TestCase):
         with self.assertRaises(LocalAgentError):
             _run_claude_agent("prompt", "claude-opus-4-8")
 
-    @patch("agentreview.local_ui.subprocess.run")
+    @patch("agentreview.local_ui.subprocess.Popen")
     @patch("agentreview.local_ui.shutil.which", return_value="/usr/bin/claude")
-    def test_run_claude_agent_surfaces_cli_failure(self, which_mock, run_mock) -> None:
-        run_mock.return_value = subprocess.CompletedProcess(
-            args=["claude"],
-            returncode=1,
-            stdout="",
-            stderr="something exploded",
+    def test_run_claude_agent_surfaces_cli_failure(self, which_mock, popen_mock) -> None:
+        popen_mock.return_value = _FakeAgentProcess(
+            "", stderr="something exploded", returncode=1
         )
 
         with self.assertRaises(LocalAgentError) as ctx:
@@ -1725,9 +1731,61 @@ class LocalAgentTests(unittest.TestCase):
 
         self.assertIn("something exploded", str(ctx.exception))
 
-    @patch("agentreview.local_ui._run_claude_agent")
-    def test_session_state_run_agent_uses_configured_model(self, run_agent_mock) -> None:
-        run_agent_mock.return_value = {"response": "ok", "model": "my-model"}
+    @patch("agentreview.local_ui.subprocess.Popen")
+    @patch("agentreview.local_ui.shutil.which", return_value="/usr/bin/claude")
+    def test_stream_claude_agent_yields_segments_then_done(
+        self, which_mock, popen_mock
+    ) -> None:
+        from agentreview.local_ui import _stream_claude_agent
+
+        stream = "\n".join(
+            [
+                json.dumps({"type": "system", "subtype": "init", "session_id": "sess-1"}),
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "message": {"content": [{"type": "text", "text": "part one"}]},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "message": {"content": [{"type": "text", "text": "part two"}]},
+                    }
+                ),
+                json.dumps({"type": "result", "is_error": False, "result": "final"}),
+            ]
+        )
+        popen_mock.return_value = _FakeAgentProcess(stream + "\n")
+
+        events = list(_stream_claude_agent("q", "claude-opus-4-8"))
+
+        self.assertEqual(
+            [event["type"] for event in events], ["segment", "segment", "done"]
+        )
+        self.assertEqual(events[0]["segment"], {"type": "text", "text": "part one"})
+        self.assertEqual(events[-1]["result"]["response"], "part one\n\npart two")
+
+    @patch("agentreview.local_ui.subprocess.Popen")
+    @patch("agentreview.local_ui.shutil.which", return_value="/usr/bin/claude")
+    def test_stream_claude_agent_passes_resume_session(
+        self, which_mock, popen_mock
+    ) -> None:
+        from agentreview.local_ui import _stream_claude_agent
+
+        stream = json.dumps({"type": "result", "is_error": False, "result": "ok"})
+        popen_mock.return_value = _FakeAgentProcess(stream + "\n")
+
+        list(_stream_claude_agent("q", "claude-opus-4-8", "sess-resume"))
+
+        command = popen_mock.call_args.args[0]
+        self.assertEqual(command[command.index("--resume") + 1], "sess-resume")
+
+    @patch("agentreview.local_ui._stream_claude_agent")
+    def test_session_state_run_agent_uses_configured_model(self, stream_mock) -> None:
+        stream_mock.return_value = iter(
+            [{"type": "done", "result": {"response": "ok", "model": "my-model"}}]
+        )
         session_state = _LocalReviewSessionState(
             session_id="local-test",
             payload_response=b"{}",
@@ -1737,7 +1795,7 @@ class LocalAgentTests(unittest.TestCase):
 
         result = session_state.run_agent("hello")
 
-        run_agent_mock.assert_called_once_with("hello", "my-model")
+        stream_mock.assert_called_once_with("hello", "my-model", None)
         self.assertEqual(result["response"], "ok")
 
 

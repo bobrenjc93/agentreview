@@ -305,7 +305,7 @@ export default function SettingsPage() {
                 <button
                   type="submit"
                   disabled={saveState === "saving"}
-                  className="settings-save-button rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium transition-colors hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500"
+                  className="primary-action-button rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium transition-colors hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500"
                 >
                   {saveState === "saving" ? "Saving…" : "Save"}
                 </button>

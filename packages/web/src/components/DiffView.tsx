@@ -641,6 +641,7 @@ export function DiffView({
   const {
     addComment,
     retryAgentReply,
+    askAgentFollowUp,
     getCommentsForFile,
     updateComment,
     removeComment,
@@ -1435,6 +1436,7 @@ export function DiffView({
             onEdit={updateComment}
             onDelete={removeComment}
             onRetryAgent={retryAgentReply}
+            onAskAgentFollowUp={askAgentFollowUp}
           />
         ))}
         {commentingRange?.endRowKey === rowKey && (

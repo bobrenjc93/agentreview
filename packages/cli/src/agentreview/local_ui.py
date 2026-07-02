@@ -16,7 +16,8 @@ import sys
 import tarfile
 import tempfile
 from threading import Lock
-from typing import Callable
+from time import monotonic
+from typing import Callable, Iterator
 from urllib.parse import parse_qs, parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 import webbrowser
@@ -180,57 +181,100 @@ def _summarize_tool_use(block: dict) -> dict | None:
     return None
 
 
+def _process_claude_event(event: dict) -> tuple[list[dict], str | None, dict | None]:
+    """Returns (new segments, session id if seen, result event if seen)."""
+    segments: list[dict] = []
+    session_id: str | None = None
+    result_event: dict | None = None
+
+    event_type = event.get("type")
+    if event_type == "system" and event.get("subtype") == "init":
+        session_id = event.get("session_id")
+    elif event_type == "assistant":
+        for block in event.get("message", {}).get("content", []) or []:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "text" and block.get("text"):
+                segments.append({"type": "text", "text": block["text"]})
+            elif block.get("type") == "tool_use":
+                summary = _summarize_tool_use(block)
+                if summary is not None:
+                    segments.append(summary)
+    elif event_type == "result":
+        result_event = event
+        session_id = event.get("session_id")
+
+    return segments, session_id, result_event
+
+
 def _parse_agent_stream(stdout: str) -> tuple[list[dict], dict | None, str | None]:
     segments: list[dict] = []
     result_event: dict | None = None
     session_id: str | None = None
 
-    for line in stdout.splitlines():
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(event, dict):
-            continue
-
-        event_type = event.get("type")
-        if event_type == "system" and event.get("subtype") == "init":
-            session_id = event.get("session_id")
-        elif event_type == "assistant":
-            for block in event.get("message", {}).get("content", []) or []:
-                if not isinstance(block, dict):
-                    continue
-                if block.get("type") == "text" and block.get("text"):
-                    segments.append({"type": "text", "text": block["text"]})
-                elif block.get("type") == "tool_use":
-                    summary = _summarize_tool_use(block)
-                    if summary is not None:
-                        segments.append(summary)
-        elif event_type == "result":
-            result_event = event
-            session_id = event.get("session_id", session_id)
+    for event in _iter_json_lines(stdout.splitlines()):
+        new_segments, new_session_id, new_result_event = _process_claude_event(event)
+        segments.extend(new_segments)
+        if new_session_id:
+            session_id = new_session_id
+        if new_result_event is not None:
+            result_event = new_result_event
 
     return segments, result_event, session_id
 
 
-def _run_agent_command(command: list[str], cli_name: str) -> subprocess.CompletedProcess[str]:
+def _iter_json_lines(lines) -> "Iterator[dict]":
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict):
+            yield event
+
+
+def _spawn_agent(command: list[str], cli_name: str) -> subprocess.Popen:
     try:
-        return subprocess.run(
+        return subprocess.Popen(
             command,
             stdin=subprocess.DEVNULL,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=AGENT_TIMEOUT_SECONDS,
         )
-    except subprocess.TimeoutExpired as exc:
-        raise LocalAgentError(
-            f"The agent run timed out after {AGENT_TIMEOUT_SECONDS} seconds."
-        ) from exc
     except OSError as exc:
         raise LocalAgentError(f"Failed to launch the {cli_name} CLI: {exc}") from exc
 
 
-def _run_claude_agent(prompt: str, model: str) -> dict:
+def _iter_agent_stdout(proc: subprocess.Popen, deadline: float) -> "Iterator[str]":
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        if monotonic() > deadline:
+            proc.kill()
+            raise LocalAgentError(
+                f"The agent run timed out after {AGENT_TIMEOUT_SECONDS} seconds."
+            )
+        yield line
+
+
+def _finish_agent_process(proc: subprocess.Popen, deadline: float) -> tuple[int, str]:
+    stderr = proc.stderr.read() if proc.stderr else ""
+    try:
+        code = proc.wait(timeout=max(1.0, deadline - monotonic()))
+    except subprocess.TimeoutExpired as exc:
+        proc.kill()
+        raise LocalAgentError(
+            f"The agent run timed out after {AGENT_TIMEOUT_SECONDS} seconds."
+        ) from exc
+    return code, stderr
+
+
+def _stream_claude_agent(
+    prompt: str,
+    model: str,
+    resume_session_id: str | None = None,
+) -> "Iterator[dict]":
+    """Yields {"type": "segment", ...} events as they arrive, then one {"type": "done", ...}."""
     claude = shutil.which("claude")
     if claude is None:
         raise LocalAgentError(
@@ -238,21 +282,40 @@ def _run_claude_agent(prompt: str, model: str) -> dict:
         )
 
     command = [claude, "-p", prompt, "--output-format", "stream-json", "--verbose"]
+    if resume_session_id:
+        command += ["--resume", resume_session_id]
     if model:
         command += ["--model", model]
     command += shlex.split(os.environ.get(AGENT_EXTRA_ARGS_ENV, ""))
 
-    result = _run_agent_command(command, "claude")
+    proc = _spawn_agent(command, "claude")
+    deadline = monotonic() + AGENT_TIMEOUT_SECONDS
+    segments: list[dict] = []
+    result_event: dict | None = None
+    session_id: str | None = None
 
-    segments, result_event, session_id = _parse_agent_stream(result.stdout)
+    try:
+        for event in _iter_json_lines(_iter_agent_stdout(proc, deadline)):
+            new_segments, new_session_id, new_result_event = _process_claude_event(event)
+            if new_session_id:
+                session_id = new_session_id
+            if new_result_event is not None:
+                result_event = new_result_event
+            for segment in new_segments:
+                segments.append(segment)
+                yield {"type": "segment", "segment": segment}
+        code, stderr = _finish_agent_process(proc, deadline)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
 
-    if result.returncode != 0 or result_event is None or result_event.get("is_error"):
+    if code != 0 or result_event is None or result_event.get("is_error"):
         detail = ""
         if result_event and result_event.get("result"):
             detail = str(result_event["result"])
-        elif result.stderr.strip():
-            detail = result.stderr.strip().splitlines()[-1]
-        message = f"The claude CLI exited with code {result.returncode}."
+        elif stderr.strip():
+            detail = stderr.strip().splitlines()[-1]
+        message = f"The claude CLI exited with code {code}."
         if detail:
             message = f"{message} {detail}"
         raise LocalAgentError(message)
@@ -260,13 +323,16 @@ def _run_claude_agent(prompt: str, model: str) -> dict:
     text_parts = [segment["text"] for segment in segments if segment["type"] == "text"]
     response_text = "\n\n".join(text_parts) or str(result_event.get("result") or "")
 
-    return {
-        "response": response_text,
-        "segments": segments,
-        "model": model,
-        "durationMs": result_event.get("duration_ms"),
-        "costUsd": result_event.get("total_cost_usd"),
-        "sessionId": session_id,
+    yield {
+        "type": "done",
+        "result": {
+            "response": response_text,
+            "segments": segments,
+            "model": model,
+            "durationMs": result_event.get("duration_ms"),
+            "costUsd": result_event.get("total_cost_usd"),
+            "sessionId": session_id,
+        },
     }
 
 
@@ -309,6 +375,43 @@ def _parse_codex_item(item: dict, segments: list[dict]) -> str | None:
     return None
 
 
+def _process_codex_event(event: dict) -> tuple[list[dict], str | None, str | None, bool | None]:
+    """Returns (new segments, last agent message, thread id, completed flag)."""
+    segments: list[dict] = []
+    last_message: str | None = None
+    thread_id: str | None = None
+    completed: bool | None = None
+
+    event_type = event.get("type")
+    if event_type == "thread.started":
+        thread_id = event.get("thread_id")
+    elif event_type == "item.completed" and isinstance(event.get("item"), dict):
+        message = _parse_codex_item(event["item"], segments)
+        if message:
+            last_message = message
+    elif event_type == "turn.completed":
+        completed = True
+    elif event_type == "turn.failed":
+        completed = False
+    elif isinstance(event.get("msg"), dict):
+        # legacy codex exec --json event shape
+        msg = event["msg"]
+        msg_type = msg.get("type")
+        if msg_type == "agent_message" and msg.get("message"):
+            last_message = str(msg["message"])
+            segments.append({"type": "text", "text": last_message})
+        elif msg_type == "exec_command_begin":
+            detail = _codex_command_detail(msg.get("command") or "")
+            if detail:
+                segments.append({"type": "tool", "name": "shell", "detail": detail})
+        elif msg_type == "task_complete":
+            completed = True
+            if msg.get("last_agent_message"):
+                last_message = str(msg["last_agent_message"])
+
+    return segments, last_message, thread_id, completed
+
+
 def _parse_codex_stream(stdout: str) -> tuple[list[dict], str | None, str | None, bool]:
     """Returns (segments, last agent message, thread id, saw a terminal event)."""
     segments: list[dict] = []
@@ -316,46 +419,21 @@ def _parse_codex_stream(stdout: str) -> tuple[list[dict], str | None, str | None
     thread_id: str | None = None
     completed = False
 
-    for line in stdout.splitlines():
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(event, dict):
-            continue
-
-        event_type = event.get("type")
-        if event_type == "thread.started":
-            thread_id = event.get("thread_id")
-        elif event_type in ("item.completed", "item.updated") and isinstance(event.get("item"), dict):
-            if event_type == "item.completed":
-                message = _parse_codex_item(event["item"], segments)
-                if message:
-                    last_message = message
-        elif event_type == "turn.completed":
-            completed = True
-        elif event_type == "turn.failed":
-            completed = False
-        elif isinstance(event.get("msg"), dict):
-            # legacy codex exec --json event shape
-            msg = event["msg"]
-            msg_type = msg.get("type")
-            if msg_type == "agent_message" and msg.get("message"):
-                last_message = str(msg["message"])
-                segments.append({"type": "text", "text": last_message})
-            elif msg_type == "exec_command_begin":
-                detail = _codex_command_detail(msg.get("command") or "")
-                if detail:
-                    segments.append({"type": "tool", "name": "shell", "detail": detail})
-            elif msg_type == "task_complete":
-                completed = True
-                if msg.get("last_agent_message"):
-                    last_message = str(msg["last_agent_message"])
+    for event in _iter_json_lines(stdout.splitlines()):
+        new_segments, new_message, new_thread_id, new_completed = _process_codex_event(event)
+        segments.extend(new_segments)
+        if new_message:
+            last_message = new_message
+        if new_thread_id:
+            thread_id = new_thread_id
+        if new_completed is not None:
+            completed = new_completed
 
     return segments, last_message, thread_id, completed
 
 
-def _run_codex_agent(prompt: str, model: str) -> dict:
+def _stream_codex_agent(prompt: str, model: str) -> "Iterator[dict]":
+    """Yields {"type": "segment", ...} events as they arrive, then one {"type": "done", ...}."""
     codex = shutil.which("codex")
     if codex is None:
         raise LocalAgentError(
@@ -368,15 +446,35 @@ def _run_codex_agent(prompt: str, model: str) -> dict:
     command += shlex.split(os.environ.get(CODEX_EXTRA_ARGS_ENV, ""))
     command.append(prompt)
 
-    result = _run_agent_command(command, "codex")
+    proc = _spawn_agent(command, "codex")
+    deadline = monotonic() + AGENT_TIMEOUT_SECONDS
+    segments: list[dict] = []
+    last_message: str | None = None
+    thread_id: str | None = None
+    completed = False
 
-    segments, last_message, thread_id, completed = _parse_codex_stream(result.stdout)
+    try:
+        for event in _iter_json_lines(_iter_agent_stdout(proc, deadline)):
+            new_segments, new_message, new_thread_id, new_completed = _process_codex_event(event)
+            if new_message:
+                last_message = new_message
+            if new_thread_id:
+                thread_id = new_thread_id
+            if new_completed is not None:
+                completed = new_completed
+            for segment in new_segments:
+                segments.append(segment)
+                yield {"type": "segment", "segment": segment}
+        code, stderr = _finish_agent_process(proc, deadline)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
 
-    if result.returncode != 0 or (not completed and last_message is None):
+    if code != 0 or (not completed and last_message is None):
         detail = ""
-        if result.stderr.strip():
-            detail = result.stderr.strip().splitlines()[-1]
-        message = f"The codex CLI exited with code {result.returncode}."
+        if stderr.strip():
+            detail = stderr.strip().splitlines()[-1]
+        message = f"The codex CLI exited with code {code}."
         if detail:
             message = f"{message} {detail}"
         raise LocalAgentError(message)
@@ -384,14 +482,35 @@ def _run_codex_agent(prompt: str, model: str) -> dict:
     text_parts = [segment["text"] for segment in segments if segment["type"] == "text"]
     response_text = "\n\n".join(text_parts) or (last_message or "")
 
-    return {
-        "response": response_text,
-        "segments": segments,
-        "model": model or "codex default",
-        "durationMs": None,
-        "costUsd": None,
-        "sessionId": thread_id,
+    yield {
+        "type": "done",
+        "result": {
+            "response": response_text,
+            "segments": segments,
+            "model": model or "codex default",
+            "durationMs": None,
+            "costUsd": None,
+            "sessionId": thread_id,
+        },
     }
+
+
+def _drain_agent_stream(stream: "Iterator[dict]") -> dict:
+    result: dict | None = None
+    for event in stream:
+        if event.get("type") == "done":
+            result = event.get("result")
+    if result is None:
+        raise LocalAgentError("The agent run produced no result.")
+    return result
+
+
+def _run_claude_agent(prompt: str, model: str) -> dict:
+    return _drain_agent_stream(_stream_claude_agent(prompt, model))
+
+
+def _run_codex_agent(prompt: str, model: str) -> dict:
+    return _drain_agent_stream(_stream_codex_agent(prompt, model))
 
 
 def _report_progress(progress: ProgressReporter | None, message: str) -> None:
@@ -474,19 +593,28 @@ class _LocalReviewSessionState:
         _report_progress(self.progress, "Local review refresh is ready.")
         return session_id, payload_response
 
-    def run_agent(self, prompt: str) -> dict:
+    def stream_agent(
+        self,
+        prompt: str,
+        resume_session_id: str | None = None,
+    ) -> Iterator[dict]:
         backend, claude_model, codex_model = self.get_agent_config()
         if backend == "codex":
             _report_progress(
                 self.progress,
                 f"Running codex exec with model {codex_model or 'codex default'}.",
             )
-            result = _run_codex_agent(prompt, codex_model)
+            # codex exec resume is not wired up yet; replies fall back to a
+            # fresh run with the conversation embedded in the prompt.
+            stream = _stream_codex_agent(prompt, codex_model)
         else:
             _report_progress(self.progress, f"Running claude -p with model {claude_model}.")
-            result = _run_claude_agent(prompt, claude_model)
+            stream = _stream_claude_agent(prompt, claude_model, resume_session_id)
+        yield from stream
         _report_progress(self.progress, "The agent reply is ready.")
-        return result
+
+    def run_agent(self, prompt: str) -> dict:
+        return _drain_agent_stream(self.stream_agent(prompt))
 
     def get_agent_config(self) -> tuple[str, str, str]:
         with self._lock:
@@ -733,22 +861,38 @@ class _LocalUiRequestHandler(SimpleHTTPRequestHandler):
             )
             return True
 
-        try:
-            result = self._session_state.run_agent(prompt)
-        except LocalAgentError as exc:
-            self._send_json_error(HTTPStatus.BAD_GATEWAY, str(exc), send_body=True)
-            return True
-        except Exception as exc:
-            message = str(exc).strip() or "The agent run failed."
-            self._send_json_error(HTTPStatus.INTERNAL_SERVER_ERROR, message, send_body=True)
-            return True
+        resume_session_id = body.get("resumeSessionId") if isinstance(body, dict) else None
+        if not isinstance(resume_session_id, str) or not resume_session_id.strip():
+            resume_session_id = None
 
-        response = json.dumps(result, separators=(",", ":")).encode("utf-8")
+        # Stream NDJSON: segment events as the agent produces them, then a
+        # final done (or error) line. Errors after streaming begins can no
+        # longer change the HTTP status, so they ride in the last line.
         self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(response)))
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
         self.end_headers()
-        self.wfile.write(response)
+
+        def write_line(event: dict) -> None:
+            self.wfile.write(json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n")
+            self.wfile.flush()
+
+        try:
+            for event in self._session_state.stream_agent(prompt, resume_session_id):
+                write_line(event)
+        except BrokenPipeError:
+            pass
+        except LocalAgentError as exc:
+            error_message = str(exc)
+            try:
+                write_line({"type": "error", "error": error_message})
+            except BrokenPipeError:
+                pass
+        except Exception as exc:
+            error_message = str(exc).strip() or "The agent run failed."
+            try:
+                write_line({"type": "error", "error": error_message})
+            except BrokenPipeError:
+                pass
         return True
 
     def _maybe_serve_settings(self, *, method: str) -> bool:

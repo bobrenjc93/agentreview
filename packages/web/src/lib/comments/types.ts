@@ -9,6 +9,21 @@ export interface CommentAgentSegment {
   detail?: string;
 }
 
+export interface CommentAgentExchange {
+  id: string;
+  question: string;
+  createdAt: string;
+  status: CommentAgentStatus;
+  startedAt?: string;
+  finishedAt?: string;
+  reply?: string;
+  segments?: CommentAgentSegment[];
+  error?: string;
+  model?: string;
+  durationMs?: number;
+  costUsd?: number;
+}
+
 interface CommentLineRange {
   startLineNumber: number;
   endLineNumber: number;
@@ -44,6 +59,8 @@ export interface ReviewComment {
   agentModel?: string;
   agentDurationMs?: number;
   agentCostUsd?: number;
+  agentSessionId?: string;
+  agentReplies?: CommentAgentExchange[];
 }
 
 export type NewReviewComment = Omit<ReviewComment, "id" | "createdAt">;

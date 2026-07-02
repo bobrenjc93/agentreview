@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import {
+  type CommentAgentExchange,
+  type CommentAgentSegment,
   type ReviewComment,
   formatReviewCommentRange,
 } from "@/lib/comments/types";
@@ -13,23 +15,29 @@ interface InlineCommentProps {
   onEdit: (id: string, body: string) => void;
   onDelete: (id: string) => void;
   onRetryAgent?: (id: string) => void;
+  onAskAgentFollowUp?: (id: string, question: string) => void;
 }
 
-function formatAgentReplyNote(comment: ReviewComment): string {
-  const parts: string[] = [comment.agentModel || "agent"];
-  if (typeof comment.agentDurationMs === "number") {
-    parts.push(`${(comment.agentDurationMs / 1000).toFixed(1)}s`);
-  } else if (comment.agentFinishedAt && comment.agentStartedAt) {
-    const elapsedMs =
-      Date.parse(comment.agentFinishedAt) - Date.parse(comment.agentStartedAt);
+function formatAgentNote(parts: {
+  model?: string;
+  durationMs?: number;
+  costUsd?: number;
+  startedAt?: string;
+  finishedAt?: string;
+}): string {
+  const note: string[] = [parts.model || "agent"];
+  if (typeof parts.durationMs === "number") {
+    note.push(`${(parts.durationMs / 1000).toFixed(1)}s`);
+  } else if (parts.finishedAt && parts.startedAt) {
+    const elapsedMs = Date.parse(parts.finishedAt) - Date.parse(parts.startedAt);
     if (Number.isFinite(elapsedMs) && elapsedMs >= 0) {
-      parts.push(`${(elapsedMs / 1000).toFixed(1)}s`);
+      note.push(`${(elapsedMs / 1000).toFixed(1)}s`);
     }
   }
-  if (typeof comment.agentCostUsd === "number") {
-    parts.push(`$${comment.agentCostUsd.toFixed(2)}`);
+  if (typeof parts.costUsd === "number") {
+    note.push(`$${parts.costUsd.toFixed(2)}`);
   }
-  return parts.join(" · ");
+  return note.join(" · ");
 }
 
 function formatElapsedSeconds(elapsedSeconds: number): string {
@@ -41,7 +49,20 @@ function formatElapsedSeconds(elapsedSeconds: number): string {
   return `${minutes}m ${seconds}s`;
 }
 
-function AgentPendingIndicator({ startedAt }: { startedAt?: string }) {
+function getElapsedSeconds(startedAt?: string): number {
+  if (!startedAt) return 0;
+  const startedMs = Date.parse(startedAt);
+  if (Number.isNaN(startedMs)) return 0;
+  return Math.max(0, Math.floor((Date.now() - startedMs) / 1000));
+}
+
+function AgentPendingIndicator({
+  startedAt,
+  segments,
+}: {
+  startedAt?: string;
+  segments?: CommentAgentSegment[];
+}) {
   const [elapsedSeconds, setElapsedSeconds] = useState(() =>
     getElapsedSeconds(startedAt)
   );
@@ -55,36 +76,150 @@ function AgentPendingIndicator({ startedAt }: { startedAt?: string }) {
   }, [startedAt]);
 
   return (
-    <div className="mt-2 flex items-center gap-2 border-t border-gray-700 pt-2">
-      <span className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-cyan-400/30 border-t-cyan-400" />
-      <p className="text-xs text-gray-400">
-        Agent is thinking…
-        <span className="ml-1.5 font-mono tabular-nums text-cyan-400/90">
-          {formatElapsedSeconds(elapsedSeconds)}
-        </span>
-      </p>
+    <div className="mt-2 border-t border-gray-700 pt-2">
+      {segments && segments.length > 0 && (
+        <div className="mb-2">
+          <AgentReplyBody segments={segments} />
+        </div>
+      )}
+      <div className="flex items-center gap-2">
+        <span className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-cyan-400/30 border-t-cyan-400" />
+        <p className="text-xs text-gray-400">
+          Agent is thinking…
+          <span className="ml-1.5 font-mono tabular-nums text-cyan-400/90">
+            {formatElapsedSeconds(elapsedSeconds)}
+          </span>
+        </p>
+      </div>
     </div>
   );
 }
 
-function getElapsedSeconds(startedAt?: string): number {
-  if (!startedAt) return 0;
-  const startedMs = Date.parse(startedAt);
-  if (Number.isNaN(startedMs)) return 0;
-  return Math.max(0, Math.floor((Date.now() - startedMs) / 1000));
+function AgentReplyThread({
+  exchange,
+}: {
+  exchange: CommentAgentExchange;
+}) {
+  return (
+    <div className="mt-2 border-t border-gray-700/70 pt-2">
+      <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-gray-500">
+        You replied
+      </p>
+      <p className="text-sm text-gray-200 whitespace-pre-wrap">{exchange.question}</p>
+      {exchange.status === "pending" ? (
+        <AgentPendingIndicator
+          startedAt={exchange.startedAt}
+          segments={exchange.segments}
+        />
+      ) : exchange.status === "error" ? (
+        <p className="mt-2 text-xs text-red-400">
+          Agent reply failed: {exchange.error || "unknown error"}
+        </p>
+      ) : (
+        <div className="mt-2">
+          <p className="mb-1 text-[11px] text-cyan-400/90">
+            {formatAgentNote(exchange)}
+          </p>
+          <AgentReplyBody
+            segments={exchange.segments}
+            fallbackText={exchange.reply}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AgentFollowUpForm({
+  onSubmit,
+}: {
+  onSubmit: (question: string) => void;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [question, setQuestion] = useState("");
+
+  if (!isOpen) {
+    return (
+      <button
+        type="button"
+        onClick={() => setIsOpen(true)}
+        className="mt-2 text-xs text-blue-400 hover:text-blue-300 transition-colors"
+      >
+        Reply
+      </button>
+    );
+  }
+
+  function submit() {
+    const trimmed = question.trim();
+    if (!trimmed) return;
+    onSubmit(trimmed);
+    setQuestion("");
+    setIsOpen(false);
+  }
+
+  return (
+    <div className="mt-2">
+      <textarea
+        autoFocus
+        value={question}
+        onChange={(e) => setQuestion(e.target.value)}
+        placeholder="Reply to the agent..."
+        className="w-full bg-gray-900 text-gray-200 text-sm border border-gray-700 rounded p-2 resize-none focus:outline-none focus:border-blue-500"
+        rows={2}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault();
+            submit();
+          }
+          if (e.key === "Escape") {
+            setIsOpen(false);
+            setQuestion("");
+          }
+        }}
+      />
+      <div className="mt-1 flex justify-end gap-2">
+        <button
+          type="button"
+          onClick={() => {
+            setIsOpen(false);
+            setQuestion("");
+          }}
+          className="px-2 py-1 text-xs text-gray-400 hover:text-white transition-colors"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={submit}
+          disabled={!question.trim()}
+          className="primary-action-button rounded bg-blue-600 px-2.5 py-1 text-xs font-medium transition-colors hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500"
+        >
+          Reply
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function AgentReplySection({
   comment,
   onRetryAgent,
+  onAskAgentFollowUp,
 }: {
   comment: ReviewComment;
   onRetryAgent?: (id: string) => void;
+  onAskAgentFollowUp?: (id: string, question: string) => void;
 }) {
   if (!comment.agentStatus) return null;
 
   if (comment.agentStatus === "pending") {
-    return <AgentPendingIndicator startedAt={comment.agentStartedAt} />;
+    return (
+      <AgentPendingIndicator
+        startedAt={comment.agentStartedAt}
+        segments={comment.agentSegments}
+      />
+    );
   }
 
   if (comment.agentStatus === "error") {
@@ -106,20 +241,45 @@ function AgentReplySection({
     );
   }
 
+  const exchanges = comment.agentReplies ?? [];
+  const hasPendingExchange = exchanges.some(
+    (exchange) => exchange.status === "pending"
+  );
+
   return (
     <div className="mt-2 border-t border-gray-700 pt-2">
       <p className="mb-1 text-[11px] text-cyan-400/90">
-        {formatAgentReplyNote(comment)}
+        {formatAgentNote({
+          model: comment.agentModel,
+          durationMs: comment.agentDurationMs,
+          costUsd: comment.agentCostUsd,
+          startedAt: comment.agentStartedAt,
+          finishedAt: comment.agentFinishedAt,
+        })}
       </p>
       <AgentReplyBody
         segments={comment.agentSegments}
         fallbackText={comment.agentReply}
       />
+      {exchanges.map((exchange) => (
+        <AgentReplyThread key={exchange.id} exchange={exchange} />
+      ))}
+      {onAskAgentFollowUp && !hasPendingExchange && (
+        <AgentFollowUpForm
+          onSubmit={(question) => onAskAgentFollowUp(comment.id, question)}
+        />
+      )}
     </div>
   );
 }
 
-export function InlineComment({ comment, onEdit, onDelete, onRetryAgent }: InlineCommentProps) {
+export function InlineComment({
+  comment,
+  onEdit,
+  onDelete,
+  onRetryAgent,
+  onAskAgentFollowUp,
+}: InlineCommentProps) {
   const [isEditing, setIsEditing] = useState(false);
 
   if (isEditing) {
@@ -140,14 +300,18 @@ export function InlineComment({ comment, onEdit, onDelete, onRetryAgent }: Inlin
   return (
     <div className="bg-gray-800 border border-gray-700 rounded-md p-3 mx-2 my-1">
       <div className="flex items-start justify-between gap-2">
-        <div className="flex-1">
+        <div className="min-w-0 flex-1">
           <p className="text-[11px] text-gray-500 mb-1">
             {formatReviewCommentRange(comment)}
           </p>
           <p className="text-sm text-gray-200 whitespace-pre-wrap">
             {comment.body}
           </p>
-          <AgentReplySection comment={comment} onRetryAgent={onRetryAgent} />
+          <AgentReplySection
+            comment={comment}
+            onRetryAgent={onRetryAgent}
+            onAskAgentFollowUp={onAskAgentFollowUp}
+          />
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <button

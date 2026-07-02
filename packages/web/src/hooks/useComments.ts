@@ -4,6 +4,7 @@ import { createContext, useContext, useState, useCallback, useEffect, useRef } f
 import {
   commentEndsOnLine,
   commentIncludesLine,
+  type CommentAgentSegment,
   type NewReviewComment,
   type ReviewComment,
   type ReviewCommentSide,
@@ -11,7 +12,11 @@ import {
   isLineComment,
   normalizeReviewComment,
 } from "@/lib/comments/types";
-import { buildAgentPrompt, type RunAgent } from "@/lib/comments/agent";
+import {
+  buildAgentPrompt,
+  buildFollowUpPrompt,
+  type RunAgent,
+} from "@/lib/comments/agent";
 import { createClientId } from "@/lib/id";
 import { loadComments, saveComments, clearComments as clearStorage } from "@/lib/comments/storage";
 
@@ -19,6 +24,7 @@ interface CommentsContextValue {
   comments: ReviewComment[];
   addComment: (comment: NewReviewComment, options?: { diffContext?: string }) => void;
   retryAgentReply: (id: string) => void;
+  askAgentFollowUp: (id: string, question: string) => void;
   updateComment: (id: string, body: string) => void;
   removeComment: (id: string) => void;
   removeComments: (ids: string[]) => void;
@@ -44,19 +50,34 @@ export function useCommentsProvider(sessionId: string, runAgent?: RunAgent) {
   const agentPromptById = useRef(new Map<string, string>());
   const runAgentRef = useRef<RunAgent | undefined>(runAgent);
   runAgentRef.current = runAgent;
+  const commentsRef = useRef<ReviewComment[]>(comments);
+  commentsRef.current = comments;
 
   useEffect(() => {
     // Agent runs from a previous page load can never resolve; surface them as errors.
+    const interruptedError = "The agent run was interrupted before it finished.";
     setComments(
-      loadComments(sessionId).map((comment) =>
-        comment.agentStatus === "pending"
-          ? {
-              ...comment,
-              agentStatus: "error" as const,
-              agentError: "The agent run was interrupted before it finished.",
-            }
-          : comment
-      )
+      loadComments(sessionId).map((comment) => {
+        let next = comment;
+        if (next.agentStatus === "pending") {
+          next = {
+            ...next,
+            agentStatus: "error" as const,
+            agentError: interruptedError,
+          };
+        }
+        if (next.agentReplies?.some((exchange) => exchange.status === "pending")) {
+          next = {
+            ...next,
+            agentReplies: next.agentReplies?.map((exchange) =>
+              exchange.status === "pending"
+                ? { ...exchange, status: "error" as const, error: interruptedError }
+                : exchange
+            ),
+          };
+        }
+        return next;
+      })
     );
     setLoadedSessionId(sessionId);
   }, [sessionId]);
@@ -66,65 +87,146 @@ export function useCommentsProvider(sessionId: string, runAgent?: RunAgent) {
     saveComments(sessionId, comments);
   }, [sessionId, comments, loadedSessionId]);
 
-  const startAgentReply = useCallback((commentId: string, prompt: string) => {
-    const run = runAgentRef.current;
-    if (!run) return;
+  const patchComment = useCallback(
+    (commentId: string, patch: (comment: ReviewComment) => ReviewComment) => {
+      setComments((prev) =>
+        prev.map((comment) => (comment.id === commentId ? patch(comment) : comment))
+      );
+    },
+    []
+  );
 
-    agentPromptById.current.set(commentId, prompt);
-    setComments((prev) =>
-      prev.map((comment) =>
-        comment.id === commentId
-          ? {
-              ...comment,
-              agentStatus: "pending",
-              agentStartedAt: new Date().toISOString(),
-              agentFinishedAt: undefined,
-              agentReply: undefined,
-              agentSegments: undefined,
-              agentError: undefined,
-            }
-          : comment
-      )
-    );
+  const startAgentReply = useCallback(
+    (commentId: string, prompt: string) => {
+      const run = runAgentRef.current;
+      if (!run) return;
 
-    run(prompt).then(
-      (result) => {
-        setComments((prev) =>
-          prev.map((comment) =>
-            comment.id === commentId
-              ? {
-                  ...comment,
-                  agentStatus: "done",
-                  agentFinishedAt: new Date().toISOString(),
-                  agentReply: result.response,
-                  agentSegments: result.segments,
-                  agentError: undefined,
-                  agentModel: result.model,
-                  agentDurationMs: result.durationMs,
-                  agentCostUsd: result.costUsd,
-                }
-              : comment
-          )
-        );
-      },
-      (error: unknown) => {
-        setComments((prev) =>
-          prev.map((comment) =>
-            comment.id === commentId
-              ? {
-                  ...comment,
-                  agentStatus: "error",
-                  agentError:
-                    error instanceof Error
-                      ? error.message
-                      : "The agent run failed.",
-                }
-              : comment
-          )
-        );
-      }
-    );
-  }, []);
+      agentPromptById.current.set(commentId, prompt);
+      patchComment(commentId, (comment) => ({
+        ...comment,
+        agentStatus: "pending",
+        agentStartedAt: new Date().toISOString(),
+        agentFinishedAt: undefined,
+        agentReply: undefined,
+        agentSegments: undefined,
+        agentError: undefined,
+        agentSessionId: undefined,
+        agentReplies: undefined,
+      }));
+
+      run(prompt, {
+        onSegment: (segment) => {
+          patchComment(commentId, (comment) => ({
+            ...comment,
+            agentSegments: [...(comment.agentSegments ?? []), segment],
+          }));
+        },
+      }).then(
+        (result) => {
+          patchComment(commentId, (comment) => ({
+            ...comment,
+            agentStatus: "done",
+            agentFinishedAt: new Date().toISOString(),
+            agentReply: result.response,
+            agentSegments: result.segments ?? comment.agentSegments,
+            agentError: undefined,
+            agentModel: result.model,
+            agentDurationMs: result.durationMs,
+            agentCostUsd: result.costUsd,
+            agentSessionId: result.sessionId,
+          }));
+        },
+        (error: unknown) => {
+          patchComment(commentId, (comment) => ({
+            ...comment,
+            agentStatus: "error",
+            agentError:
+              error instanceof Error ? error.message : "The agent run failed.",
+          }));
+        }
+      );
+    },
+    [patchComment]
+  );
+
+  const askAgentFollowUp = useCallback(
+    (commentId: string, question: string) => {
+      const run = runAgentRef.current;
+      const trimmed = question.trim();
+      if (!run || !trimmed) return;
+
+      const comment = commentsRef.current.find((c) => c.id === commentId);
+      if (!comment || comment.agentStatus !== "done") return;
+
+      const resumeSessionId = comment.agentSessionId;
+      const prompt = buildFollowUpPrompt(comment, trimmed, {
+        canResume: !!resumeSessionId,
+      });
+      const exchangeId = createClientId();
+      const patchExchange = (
+        patch: (exchange: NonNullable<ReviewComment["agentReplies"]>[number]) =>
+          NonNullable<ReviewComment["agentReplies"]>[number]
+      ) => {
+        patchComment(commentId, (current) => ({
+          ...current,
+          agentReplies: current.agentReplies?.map((exchange) =>
+            exchange.id === exchangeId ? patch(exchange) : exchange
+          ),
+        }));
+      };
+
+      patchComment(commentId, (current) => ({
+        ...current,
+        agentReplies: [
+          ...(current.agentReplies ?? []),
+          {
+            id: exchangeId,
+            question: trimmed,
+            createdAt: new Date().toISOString(),
+            status: "pending" as const,
+            startedAt: new Date().toISOString(),
+          },
+        ],
+      }));
+
+      run(prompt, {
+        resumeSessionId,
+        onSegment: (segment: CommentAgentSegment) => {
+          patchExchange((exchange) => ({
+            ...exchange,
+            segments: [...(exchange.segments ?? []), segment],
+          }));
+        },
+      }).then(
+        (result) => {
+          patchExchange((exchange) => ({
+            ...exchange,
+            status: "done" as const,
+            finishedAt: new Date().toISOString(),
+            reply: result.response,
+            segments: result.segments ?? exchange.segments,
+            model: result.model,
+            durationMs: result.durationMs,
+            costUsd: result.costUsd,
+          }));
+          if (result.sessionId) {
+            patchComment(commentId, (current) => ({
+              ...current,
+              agentSessionId: result.sessionId,
+            }));
+          }
+        },
+        (error: unknown) => {
+          patchExchange((exchange) => ({
+            ...exchange,
+            status: "error" as const,
+            error: error instanceof Error ? error.message : "The agent run failed.",
+          }));
+        }
+      );
+    },
+    [patchComment]
+  );
 
   const addComment = useCallback(
     (comment: NewReviewComment, options?: { diffContext?: string }) => {
@@ -221,6 +323,7 @@ export function useCommentsProvider(sessionId: string, runAgent?: RunAgent) {
     comments,
     addComment,
     retryAgentReply,
+    askAgentFollowUp,
     updateComment,
     removeComment,
     removeComments,

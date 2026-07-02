@@ -898,10 +898,10 @@ html[data-theme="light"] .agent-markdown pre {
   border-color: rgba(148, 163, 184, 0.25);
 }
 
-.settings-save-button {
+.primary-action-button {
   color: #ffffff;
 }
 
-.settings-save-button:disabled {
+.primary-action-button:disabled {
   color: #6b7280;
 }
