@@ -12,7 +12,13 @@ from .git.diff import get_diff
 from .git.files import get_file_contents
 from .git.metadata import get_metadata
 from .git.segments import get_review_segments
-from .local_ui import LocalUiError, get_default_agent_model, serve_local_review
+from .local_ui import (
+    LocalUiError,
+    get_default_agent_backend,
+    get_default_agent_model,
+    get_default_codex_model,
+    serve_local_review,
+)
 from .payload.encode import encode_payload, write_payload
 from .payload.types import AgentReviewPayload
 from .vcs import detect_repository, emit_verbose, verbose_activity
@@ -61,9 +67,11 @@ Notes:
   --staged is only available in Git repositories.
   --local serves the bundled web UI locally instead of printing a payload blob.
   Set BASE_URL to rewrite the printed/opened --local URL for proxied dev environments.
-  In --local mode, inline comments are answered by `claude -p`. Pick the model with
-  --model, AGENTREVIEW_MODEL, or the web UI settings page (default: claude-opus-4-8).
-  The settings page persists the model to ~/.config/agentreview/settings.json.
+  In --local mode, inline comments are answered by an agent CLI: `claude -p` by
+  default, or `codex exec` when selected on the web UI settings page (also via
+  AGENTREVIEW_AGENT=codex). Pick the claude model with --model, AGENTREVIEW_MODEL,
+  or the settings page (default: claude-opus-4-8). The settings page persists to
+  ~/.config/agentreview/settings.json.
   --uncommitted only affects --branch and --commit. Plain agentreview still reviews your working tree.
   COMMIT can be any git commit-ish or Sapling revision identifier.
 
@@ -313,7 +321,12 @@ def main(
     if local_mode:
         resolved_agent_model = (agent_model or "").strip() or get_default_agent_model()
         report_local_progress("Starting the local review UI.")
-        report_local_progress(f"Inline comments will run claude -p with model {resolved_agent_model}.")
+        resolved_backend = get_default_agent_backend()
+        if resolved_backend == "codex":
+            codex_model = get_default_codex_model() or "codex default"
+            report_local_progress(f"Inline comments will run codex exec with model {codex_model}.")
+        else:
+            report_local_progress(f"Inline comments will run claude -p with model {resolved_agent_model}.")
         emit_verbose(verbose, "launching local review UI")
         try:
             serve_local_review(

@@ -88,8 +88,8 @@ The web interface is available at [agentreview-web.vercel.app](https://agentrevi
 - **Unified and split diff views** -- toggle between inline and side-by-side
 - **Syntax highlighting** -- powered by Shiki with 26+ language grammars
 - **Inline comments** -- add line-level and segment-level comments with edit/delete
-- **Inline agent replies** -- in `--local` mode, each comment is answered inline by `claude -p`, with markdown rendering and one-line summaries of the tool calls the agent made (pick the model with `--model` or `AGENTREVIEW_MODEL`; extra CLI flags via `AGENTREVIEW_CLAUDE_ARGS`)
-- **Settings page** -- configure the agent model at `/settings`; the choice persists to `~/.config/agentreview/settings.json` (and browser localStorage) and applies to future `--local` runs
+- **Inline agent replies** -- in `--local` mode, each comment is answered inline by an agent CLI (`claude -p` by default, or `codex exec`), with markdown rendering and one-line summaries of the tool calls the agent made (extra CLI flags via `AGENTREVIEW_CLAUDE_ARGS` / `AGENTREVIEW_CODEX_ARGS`)
+- **Settings page** -- pick the agent (Claude Code or Codex) and its model at `/settings`; choices persist to `~/.config/agentreview/settings.json` (and browser localStorage) and apply to future `--local` runs (env overrides: `AGENTREVIEW_AGENT`, `AGENTREVIEW_MODEL`)
 - **Commit segments** -- navigate individual commits when reviewing branch/commit ranges
 - **Code folding** -- collapse unchanged sections in large diffs
 - **Context expansion** -- reveal hidden context lines in diff gaps

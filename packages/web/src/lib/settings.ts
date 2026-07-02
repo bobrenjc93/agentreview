@@ -1,6 +1,11 @@
 export const SETTINGS_STORAGE_KEY = "agentreview:settings";
 export const LOCAL_SETTINGS_ENDPOINT = "/__agentreview__/settings";
+export const DEFAULT_AGENT_BACKEND = "claude";
 export const DEFAULT_AGENT_MODEL = "claude-opus-4-8";
+
+export type AgentBackend = "claude" | "codex";
+
+export const KNOWN_AGENT_BACKENDS: AgentBackend[] = ["claude", "codex"];
 
 // Mirrors KNOWN_AGENT_MODELS in the CLI; the claude CLI has no command to
 // enumerate models, so this is a curated list and free-form input is allowed.
@@ -15,8 +20,22 @@ export const KNOWN_AGENT_MODELS = [
   "fable",
 ];
 
+// Mirrors KNOWN_CODEX_MODELS in the CLI; empty string = codex's own default.
+export const KNOWN_CODEX_MODELS = [
+  "gpt-5.1-codex-max",
+  "gpt-5.1-codex",
+  "gpt-5.1-codex-mini",
+  "gpt-5.1",
+];
+
 export interface AgentReviewSettings {
+  agent: AgentBackend;
   model: string;
+  codexModel: string;
+}
+
+export function isAgentBackend(value: unknown): value is AgentBackend {
+  return value === "claude" || value === "codex";
 }
 
 export function loadStoredSettings(): AgentReviewSettings | null {
@@ -24,14 +43,19 @@ export function loadStoredSettings(): AgentReviewSettings | null {
   try {
     const raw = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
     if (!raw) return null;
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(raw) as Partial<AgentReviewSettings> | null;
     if (
       parsed &&
       typeof parsed === "object" &&
-      typeof (parsed as AgentReviewSettings).model === "string" &&
-      (parsed as AgentReviewSettings).model.trim().length > 0
+      typeof parsed.model === "string" &&
+      parsed.model.trim().length > 0
     ) {
-      return { model: (parsed as AgentReviewSettings).model.trim() };
+      return {
+        agent: isAgentBackend(parsed.agent) ? parsed.agent : DEFAULT_AGENT_BACKEND,
+        model: parsed.model.trim(),
+        codexModel:
+          typeof parsed.codexModel === "string" ? parsed.codexModel.trim() : "",
+      };
     }
   } catch {
     // fall through to null
@@ -51,6 +75,7 @@ export function saveStoredSettings(settings: AgentReviewSettings): void {
 export interface RemoteSettings extends AgentReviewSettings {
   defaultModel?: string;
   knownModels?: string[];
+  knownCodexModels?: string[];
 }
 
 /**
@@ -62,17 +87,25 @@ export async function fetchRemoteSettings(): Promise<RemoteSettings | null> {
     const response = await fetch(LOCAL_SETTINGS_ENDPOINT, { cache: "no-store" });
     if (!response.ok) return null;
     const data = (await response.json()) as {
+      agent?: unknown;
       model?: unknown;
+      codexModel?: unknown;
       defaultModel?: unknown;
       knownModels?: unknown;
+      knownCodexModels?: unknown;
     };
     if (typeof data.model !== "string" || !data.model.trim()) return null;
     return {
+      agent: isAgentBackend(data.agent) ? data.agent : DEFAULT_AGENT_BACKEND,
       model: data.model.trim(),
+      codexModel: typeof data.codexModel === "string" ? data.codexModel.trim() : "",
       defaultModel:
         typeof data.defaultModel === "string" ? data.defaultModel : undefined,
       knownModels: Array.isArray(data.knownModels)
         ? data.knownModels.filter((m): m is string => typeof m === "string")
+        : undefined,
+      knownCodexModels: Array.isArray(data.knownCodexModels)
+        ? data.knownCodexModels.filter((m): m is string => typeof m === "string")
         : undefined,
     };
   } catch {

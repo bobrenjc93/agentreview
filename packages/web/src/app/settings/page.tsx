@@ -2,19 +2,75 @@
 
 import { useEffect, useState } from "react";
 import {
+  DEFAULT_AGENT_BACKEND,
   DEFAULT_AGENT_MODEL,
   KNOWN_AGENT_MODELS,
+  KNOWN_CODEX_MODELS,
   fetchRemoteSettings,
   loadStoredSettings,
   saveRemoteSettings,
   saveStoredSettings,
+  type AgentBackend,
 } from "@/lib/settings";
 
 type SaveState = "idle" | "saving" | "saved" | "error";
 
+const AGENT_OPTIONS: Array<{
+  value: AgentBackend;
+  label: string;
+  command: string;
+  description: string;
+}> = [
+  {
+    value: "claude",
+    label: "Claude Code",
+    command: "claude -p",
+    description: "Default. Uses the claude CLI.",
+  },
+  {
+    value: "codex",
+    label: "Codex",
+    command: "codex exec",
+    description: "Uses the codex CLI.",
+  },
+];
+
+function ModelChips({
+  models,
+  selected,
+  onSelect,
+}: {
+  models: string[];
+  selected: string;
+  onSelect: (model: string) => void;
+}) {
+  return (
+    <div className="mt-2 flex flex-wrap gap-2">
+      {models.map((model) => (
+        <button
+          key={model}
+          type="button"
+          onClick={() => onSelect(model)}
+          className={`rounded-full border px-3 py-1 font-mono text-xs transition-colors ${
+            selected === model
+              ? "border-blue-500 bg-blue-500/15 text-blue-200"
+              : "border-gray-700 text-gray-400 hover:border-gray-500 hover:text-gray-200"
+          }`}
+        >
+          {model}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export default function SettingsPage() {
+  const [agent, setAgent] = useState<AgentBackend>(DEFAULT_AGENT_BACKEND);
   const [model, setModel] = useState(DEFAULT_AGENT_MODEL);
+  const [codexModel, setCodexModel] = useState("");
   const [knownModels, setKnownModels] = useState<string[]>(KNOWN_AGENT_MODELS);
+  const [knownCodexModels, setKnownCodexModels] =
+    useState<string[]>(KNOWN_CODEX_MODELS);
   const [hasLocalServer, setHasLocalServer] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>("idle");
@@ -30,12 +86,19 @@ export default function SettingsPage() {
 
       if (remote) {
         setHasLocalServer(true);
+        setAgent(remote.agent);
         setModel(remote.model);
+        setCodexModel(remote.codexModel);
         if (remote.knownModels && remote.knownModels.length > 0) {
           setKnownModels(remote.knownModels);
         }
+        if (remote.knownCodexModels && remote.knownCodexModels.length > 0) {
+          setKnownCodexModels(remote.knownCodexModels);
+        }
       } else if (stored) {
+        setAgent(stored.agent);
         setModel(stored.model);
+        setCodexModel(stored.codexModel);
       }
       setLoaded(true);
     }
@@ -47,20 +110,31 @@ export default function SettingsPage() {
     };
   }, []);
 
-  async function handleSave(nextModel: string) {
-    const trimmed = nextModel.trim();
-    if (!trimmed) {
+  function markDirty() {
+    setSaveState("idle");
+    setSaveError(null);
+  }
+
+  async function handleSave() {
+    const trimmedModel = model.trim();
+    if (!trimmedModel) {
       setSaveState("error");
-      setSaveError("The model cannot be empty.");
+      setSaveError("The Claude model cannot be empty.");
       return;
     }
 
+    const nextSettings = {
+      agent,
+      model: trimmedModel,
+      codexModel: codexModel.trim(),
+    };
+
     setSaveState("saving");
     setSaveError(null);
-    saveStoredSettings({ model: trimmed });
+    saveStoredSettings(nextSettings);
 
     if (hasLocalServer) {
-      const ok = await saveRemoteSettings({ model: trimmed });
+      const ok = await saveRemoteSettings(nextSettings);
       if (!ok) {
         setSaveState("error");
         setSaveError(
@@ -92,9 +166,8 @@ export default function SettingsPage() {
           </h2>
           <p className="mt-2 text-sm leading-6 text-gray-400">
             In <span className="font-mono text-xs">agentreview --local</span> mode,
-            inline comments are answered by{" "}
-            <span className="font-mono text-xs">claude -p</span>. Choose which
-            model it uses.
+            inline comments are answered by an agent CLI running in your
+            repository. Choose which agent and model to use.
           </p>
 
           {!loaded ? (
@@ -104,56 +177,125 @@ export default function SettingsPage() {
               className="mt-6"
               onSubmit={(event) => {
                 event.preventDefault();
-                void handleSave(model);
+                void handleSave();
               }}
             >
-              <label
-                htmlFor="agent-model"
-                className="block text-sm font-medium text-gray-300"
-              >
-                Model
-              </label>
-              <input
-                id="agent-model"
-                type="text"
-                list="agent-model-options"
-                value={model}
-                onChange={(event) => {
-                  setModel(event.target.value);
-                  setSaveState("idle");
-                  setSaveError(null);
-                }}
-                placeholder={DEFAULT_AGENT_MODEL}
-                className="mt-2 w-full rounded-lg border border-gray-700 bg-gray-900/70 px-3 py-2 font-mono text-sm text-gray-200 focus:border-blue-500 focus:outline-none"
-              />
-              <datalist id="agent-model-options">
-                {knownModels.map((knownModel) => (
-                  <option key={knownModel} value={knownModel} />
-                ))}
-              </datalist>
-              <div className="mt-2 flex flex-wrap gap-2">
-                {knownModels.map((knownModel) => (
+              <span className="block text-sm font-medium text-gray-300">
+                Agent
+              </span>
+              <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                {AGENT_OPTIONS.map((option) => (
                   <button
-                    key={knownModel}
+                    key={option.value}
                     type="button"
                     onClick={() => {
-                      setModel(knownModel);
-                      setSaveState("idle");
-                      setSaveError(null);
+                      setAgent(option.value);
+                      markDirty();
                     }}
-                    className={`rounded-full border px-3 py-1 font-mono text-xs transition-colors ${
-                      model === knownModel
-                        ? "border-blue-500 bg-blue-500/15 text-blue-200"
-                        : "border-gray-700 text-gray-400 hover:border-gray-500 hover:text-gray-200"
+                    className={`rounded-lg border px-3 py-2 text-left transition-colors ${
+                      agent === option.value
+                        ? "border-blue-500 bg-blue-500/10"
+                        : "border-gray-700 hover:border-gray-500"
                     }`}
                   >
-                    {knownModel}
+                    <span className="flex items-baseline justify-between gap-2">
+                      <span
+                        className={`text-sm font-medium ${
+                          agent === option.value ? "text-blue-200" : "text-gray-300"
+                        }`}
+                      >
+                        {option.label}
+                      </span>
+                      <span className="font-mono text-xs text-gray-500">
+                        {option.command}
+                      </span>
+                    </span>
+                    <span className="mt-1 block text-xs text-gray-500">
+                      {option.description}
+                    </span>
                   </button>
                 ))}
               </div>
+
+              {agent === "claude" ? (
+                <div className="mt-5">
+                  <label
+                    htmlFor="agent-model"
+                    className="block text-sm font-medium text-gray-300"
+                  >
+                    Claude model
+                  </label>
+                  <input
+                    id="agent-model"
+                    type="text"
+                    list="agent-model-options"
+                    value={model}
+                    onChange={(event) => {
+                      setModel(event.target.value);
+                      markDirty();
+                    }}
+                    placeholder={DEFAULT_AGENT_MODEL}
+                    className="mt-2 w-full rounded-lg border border-gray-700 bg-gray-900/70 px-3 py-2 font-mono text-sm text-gray-200 focus:border-blue-500 focus:outline-none"
+                  />
+                  <datalist id="agent-model-options">
+                    {knownModels.map((knownModel) => (
+                      <option key={knownModel} value={knownModel} />
+                    ))}
+                  </datalist>
+                  <ModelChips
+                    models={knownModels}
+                    selected={model}
+                    onSelect={(nextModel) => {
+                      setModel(nextModel);
+                      markDirty();
+                    }}
+                  />
+                  <p className="mt-3 text-xs leading-5 text-gray-500">
+                    Any model id or alias the claude CLI accepts works. The
+                    default is <span className="font-mono">{DEFAULT_AGENT_MODEL}</span>.
+                  </p>
+                </div>
+              ) : (
+                <div className="mt-5">
+                  <label
+                    htmlFor="codex-model"
+                    className="block text-sm font-medium text-gray-300"
+                  >
+                    Codex model
+                  </label>
+                  <input
+                    id="codex-model"
+                    type="text"
+                    list="codex-model-options"
+                    value={codexModel}
+                    onChange={(event) => {
+                      setCodexModel(event.target.value);
+                      markDirty();
+                    }}
+                    placeholder="codex default"
+                    className="mt-2 w-full rounded-lg border border-gray-700 bg-gray-900/70 px-3 py-2 font-mono text-sm text-gray-200 focus:border-blue-500 focus:outline-none"
+                  />
+                  <datalist id="codex-model-options">
+                    {knownCodexModels.map((knownModel) => (
+                      <option key={knownModel} value={knownModel} />
+                    ))}
+                  </datalist>
+                  <ModelChips
+                    models={knownCodexModels}
+                    selected={codexModel}
+                    onSelect={(nextModel) => {
+                      setCodexModel(nextModel);
+                      markDirty();
+                    }}
+                  />
+                  <p className="mt-3 text-xs leading-5 text-gray-500">
+                    Passed to <span className="font-mono">codex exec --model</span>.
+                    Leave empty to use codex&apos;s own default model.
+                  </p>
+                </div>
+              )}
+
               <p className="mt-3 text-xs leading-5 text-gray-500">
-                Any model id or alias the claude CLI accepts works. The default is{" "}
-                <span className="font-mono">{DEFAULT_AGENT_MODEL}</span>.{" "}
                 {hasLocalServer
                   ? "Saved settings persist on disk (~/.config/agentreview/settings.json) and apply to future agentreview --local runs."
                   : "No local agentreview server detected; the setting is saved in this browser and applies when a local review connects to it."}
@@ -163,7 +305,7 @@ export default function SettingsPage() {
                 <button
                   type="submit"
                   disabled={saveState === "saving"}
-                  className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500"
+                  className="settings-save-button rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium transition-colors hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500"
                 >
                   {saveState === "saving" ? "Saving…" : "Save"}
                 </button>

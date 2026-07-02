@@ -27,7 +27,10 @@ from agentreview.local_ui import (
     LocalUiError,
     _LocalReviewSessionState,
     _parse_agent_stream,
+    _parse_codex_stream,
     _run_claude_agent,
+    _run_codex_agent,
+    get_default_agent_backend,
     get_default_agent_model,
     load_persisted_settings,
     save_persisted_settings,
@@ -1415,10 +1418,192 @@ class LocalAgentTests(unittest.TestCase):
                 settings = session_state.update_settings({"model": "claude-fable-5"})
 
                 self.assertEqual(settings["model"], "claude-fable-5")
-                self.assertEqual(session_state.get_agent_model(), "claude-fable-5")
+                self.assertEqual(settings["agent"], "claude")
+                self.assertEqual(
+                    session_state.get_agent_config(),
+                    ("claude", "claude-fable-5", ""),
+                )
                 self.assertEqual(
                     load_persisted_settings().get("model"), "claude-fable-5"
                 )
+
+    def test_session_state_update_settings_switches_to_codex(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            with patch.dict("os.environ", {"XDG_CONFIG_HOME": temp_dir}):
+                session_state = _LocalReviewSessionState(
+                    session_id="local-test",
+                    payload_response=b"{}",
+                    file_by_key={},
+                )
+
+                settings = session_state.update_settings(
+                    {
+                        "agent": "codex",
+                        "model": "claude-opus-4-8",
+                        "codexModel": "gpt-5.1-codex",
+                    }
+                )
+
+                self.assertEqual(settings["agent"], "codex")
+                self.assertEqual(settings["codexModel"], "gpt-5.1-codex")
+                self.assertEqual(
+                    session_state.get_agent_config(),
+                    ("codex", "claude-opus-4-8", "gpt-5.1-codex"),
+                )
+                persisted = load_persisted_settings()
+                self.assertEqual(persisted.get("agent"), "codex")
+                self.assertEqual(persisted.get("codexModel"), "gpt-5.1-codex")
+
+    def test_session_state_update_settings_rejects_unknown_agent(self) -> None:
+        session_state = _LocalReviewSessionState(
+            session_id="local-test",
+            payload_response=b"{}",
+            file_by_key={},
+        )
+
+        with self.assertRaises(LocalUiError):
+            session_state.update_settings({"agent": "gemini", "model": "x"})
+
+    @patch("agentreview.local_ui._run_codex_agent")
+    @patch("agentreview.local_ui._run_claude_agent")
+    def test_run_agent_dispatches_to_codex_backend(
+        self, run_claude_mock, run_codex_mock
+    ) -> None:
+        run_codex_mock.return_value = {"response": "from codex"}
+        session_state = _LocalReviewSessionState(
+            session_id="local-test",
+            payload_response=b"{}",
+            file_by_key={},
+            agent_backend="codex",
+            codex_model="gpt-5.1-codex",
+        )
+
+        result = session_state.run_agent("hello")
+
+        run_codex_mock.assert_called_once_with("hello", "gpt-5.1-codex")
+        run_claude_mock.assert_not_called()
+        self.assertEqual(result["response"], "from codex")
+
+    def test_parse_codex_stream_extracts_text_and_tool_segments(self) -> None:
+        stream = "\n".join(
+            [
+                json.dumps({"type": "thread.started", "thread_id": "thread-1"}),
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "command": "git log --oneline -3",
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {"type": "agent_message", "text": "All good."},
+                    }
+                ),
+                json.dumps({"type": "turn.completed", "usage": {}}),
+            ]
+        )
+
+        segments, last_message, thread_id, completed = _parse_codex_stream(stream)
+
+        self.assertTrue(completed)
+        self.assertEqual(thread_id, "thread-1")
+        self.assertEqual(last_message, "All good.")
+        self.assertEqual(
+            segments,
+            [
+                {"type": "tool", "name": "shell", "detail": "git log --oneline -3"},
+                {"type": "text", "text": "All good."},
+            ],
+        )
+
+    def test_parse_codex_stream_supports_legacy_msg_events(self) -> None:
+        stream = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "id": "0",
+                        "msg": {
+                            "type": "exec_command_begin",
+                            "command": ["bash", "-lc", "ls"],
+                        },
+                    }
+                ),
+                json.dumps(
+                    {"id": "0", "msg": {"type": "agent_message", "message": "Done."}}
+                ),
+                json.dumps(
+                    {
+                        "id": "0",
+                        "msg": {"type": "task_complete", "last_agent_message": "Done."},
+                    }
+                ),
+            ]
+        )
+
+        segments, last_message, thread_id, completed = _parse_codex_stream(stream)
+
+        self.assertTrue(completed)
+        self.assertEqual(last_message, "Done.")
+        self.assertEqual(
+            segments,
+            [
+                {"type": "tool", "name": "shell", "detail": "bash -lc ls"},
+                {"type": "text", "text": "Done."},
+            ],
+        )
+
+    @patch("agentreview.local_ui.subprocess.run")
+    @patch("agentreview.local_ui.shutil.which", return_value="/usr/bin/codex")
+    def test_run_codex_agent_invokes_codex_exec(self, which_mock, run_mock) -> None:
+        stream = "\n".join(
+            [
+                json.dumps({"type": "thread.started", "thread_id": "thread-1"}),
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {"type": "agent_message", "text": "Looks fine."},
+                    }
+                ),
+                json.dumps({"type": "turn.completed", "usage": {}}),
+            ]
+        )
+        run_mock.return_value = subprocess.CompletedProcess(
+            args=["codex"],
+            returncode=0,
+            stdout=stream,
+            stderr="",
+        )
+
+        result = _run_codex_agent("is this ok?", "gpt-5.1-codex")
+
+        command = run_mock.call_args.args[0]
+        self.assertEqual(command[1:3], ["exec", "--json"])
+        self.assertEqual(command[command.index("--model") + 1], "gpt-5.1-codex")
+        self.assertEqual(command[-1], "is this ok?")
+        self.assertEqual(result["response"], "Looks fine.")
+        self.assertEqual(result["model"], "gpt-5.1-codex")
+        self.assertEqual(result["sessionId"], "thread-1")
+
+    @patch("agentreview.local_ui.shutil.which", return_value=None)
+    def test_run_codex_agent_errors_when_codex_missing(self, which_mock) -> None:
+        with self.assertRaises(LocalAgentError):
+            _run_codex_agent("prompt", "")
+
+    @patch("agentreview.local_ui.load_persisted_settings", return_value={"agent": "codex"})
+    def test_default_agent_backend_reads_persisted_settings(self, load_settings_mock) -> None:
+        with patch.dict("os.environ", {}, clear=False):
+            import os
+
+            os.environ.pop("AGENTREVIEW_AGENT", None)
+            self.assertEqual(get_default_agent_backend(), "codex")
+
+    def test_default_agent_backend_env_override(self) -> None:
+        with patch.dict("os.environ", {"AGENTREVIEW_AGENT": "codex"}):
+            self.assertEqual(get_default_agent_backend(), "codex")
 
     def test_session_state_update_settings_rejects_empty_model(self) -> None:
         session_state = _LocalReviewSessionState(

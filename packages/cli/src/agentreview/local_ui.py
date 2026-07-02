@@ -34,9 +34,13 @@ LOCAL_AGENT_ENDPOINT = "/__agentreview__/agent"
 LOCAL_SETTINGS_ENDPOINT = "/__agentreview__/settings"
 LOCAL_UI_ARCHIVE_NAME = "local_ui_assets.tar.gz"
 LOCAL_UI_BASE_URL_ENV = "BASE_URL"
+DEFAULT_AGENT_BACKEND = "claude"
+KNOWN_AGENT_BACKENDS = ("claude", "codex")
 DEFAULT_AGENT_MODEL = "claude-opus-4-8"
+AGENT_BACKEND_ENV = "AGENTREVIEW_AGENT"
 AGENT_MODEL_ENV = "AGENTREVIEW_MODEL"
 AGENT_EXTRA_ARGS_ENV = "AGENTREVIEW_CLAUDE_ARGS"
+CODEX_EXTRA_ARGS_ENV = "AGENTREVIEW_CODEX_ARGS"
 AGENT_TIMEOUT_SECONDS = 600
 AGENT_MAX_PROMPT_BYTES = 1024 * 1024
 AGENT_TOOL_DETAIL_MAX_CHARS = 120
@@ -71,6 +75,13 @@ KNOWN_AGENT_MODELS = [
     "sonnet",
     "haiku",
     "fable",
+]
+# Curated codex model ids; empty string means codex's own default model.
+KNOWN_CODEX_MODELS = [
+    "gpt-5.1-codex-max",
+    "gpt-5.1-codex",
+    "gpt-5.1-codex-mini",
+    "gpt-5.1",
 ]
 LOCAL_FALLBACK_SEGMENT_ID = "all-changes"
 LOCAL_CACHE_BUSTER_QUERY_KEY = "agentreviewSession"
@@ -116,6 +127,25 @@ def get_default_agent_model() -> str:
         return saved_model.strip()
 
     return DEFAULT_AGENT_MODEL
+
+
+def get_default_agent_backend() -> str:
+    env_backend = os.environ.get(AGENT_BACKEND_ENV, "").strip().lower()
+    if env_backend in KNOWN_AGENT_BACKENDS:
+        return env_backend
+
+    saved_backend = load_persisted_settings().get("agent")
+    if isinstance(saved_backend, str) and saved_backend.strip().lower() in KNOWN_AGENT_BACKENDS:
+        return saved_backend.strip().lower()
+
+    return DEFAULT_AGENT_BACKEND
+
+
+def get_default_codex_model() -> str:
+    saved_model = load_persisted_settings().get("codexModel")
+    if isinstance(saved_model, str):
+        return saved_model.strip()
+    return ""
 
 
 def _truncate_tool_detail(detail: str) -> str:
@@ -183,6 +213,23 @@ def _parse_agent_stream(stdout: str) -> tuple[list[dict], dict | None, str | Non
     return segments, result_event, session_id
 
 
+def _run_agent_command(command: list[str], cli_name: str) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            command,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=AGENT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise LocalAgentError(
+            f"The agent run timed out after {AGENT_TIMEOUT_SECONDS} seconds."
+        ) from exc
+    except OSError as exc:
+        raise LocalAgentError(f"Failed to launch the {cli_name} CLI: {exc}") from exc
+
+
 def _run_claude_agent(prompt: str, model: str) -> dict:
     claude = shutil.which("claude")
     if claude is None:
@@ -195,20 +242,7 @@ def _run_claude_agent(prompt: str, model: str) -> dict:
         command += ["--model", model]
     command += shlex.split(os.environ.get(AGENT_EXTRA_ARGS_ENV, ""))
 
-    try:
-        result = subprocess.run(
-            command,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=AGENT_TIMEOUT_SECONDS,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise LocalAgentError(
-            f"The agent run timed out after {AGENT_TIMEOUT_SECONDS} seconds."
-        ) from exc
-    except OSError as exc:
-        raise LocalAgentError(f"Failed to launch the claude CLI: {exc}") from exc
+    result = _run_agent_command(command, "claude")
 
     segments, result_event, session_id = _parse_agent_stream(result.stdout)
 
@@ -233,6 +267,130 @@ def _run_claude_agent(prompt: str, model: str) -> dict:
         "durationMs": result_event.get("duration_ms"),
         "costUsd": result_event.get("total_cost_usd"),
         "sessionId": session_id,
+    }
+
+
+def _codex_command_detail(command) -> str:
+    if isinstance(command, list):
+        return _truncate_tool_detail(" ".join(str(part) for part in command))
+    return _truncate_tool_detail(str(command))
+
+
+def _parse_codex_item(item: dict, segments: list[dict]) -> str | None:
+    """Map one codex exec item to a segment; returns agent-message text if any."""
+    item_type = item.get("type") or item.get("item_type")
+    if item_type == "agent_message":
+        text = item.get("text") or item.get("message")
+        if text:
+            segments.append({"type": "text", "text": str(text)})
+            return str(text)
+    elif item_type == "command_execution":
+        detail = _codex_command_detail(item.get("command") or "")
+        if detail:
+            segments.append({"type": "tool", "name": "shell", "detail": detail})
+    elif item_type == "file_change":
+        changes = item.get("changes")
+        if isinstance(changes, list):
+            paths = ", ".join(str(change.get("path", "")) for change in changes if isinstance(change, dict))
+        else:
+            paths = ""
+        segments.append(
+            {"type": "tool", "name": "edit", "detail": _truncate_tool_detail(paths or "file change")}
+        )
+    elif item_type == "web_search":
+        query = item.get("query")
+        if query:
+            segments.append(
+                {"type": "tool", "name": "web_search", "detail": _truncate_tool_detail(str(query))}
+            )
+    elif item_type == "mcp_tool_call":
+        name = f"{item.get('server', 'mcp')}.{item.get('tool', 'tool')}"
+        segments.append({"type": "tool", "name": name, "detail": ""})
+    return None
+
+
+def _parse_codex_stream(stdout: str) -> tuple[list[dict], str | None, str | None, bool]:
+    """Returns (segments, last agent message, thread id, saw a terminal event)."""
+    segments: list[dict] = []
+    last_message: str | None = None
+    thread_id: str | None = None
+    completed = False
+
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+
+        event_type = event.get("type")
+        if event_type == "thread.started":
+            thread_id = event.get("thread_id")
+        elif event_type in ("item.completed", "item.updated") and isinstance(event.get("item"), dict):
+            if event_type == "item.completed":
+                message = _parse_codex_item(event["item"], segments)
+                if message:
+                    last_message = message
+        elif event_type == "turn.completed":
+            completed = True
+        elif event_type == "turn.failed":
+            completed = False
+        elif isinstance(event.get("msg"), dict):
+            # legacy codex exec --json event shape
+            msg = event["msg"]
+            msg_type = msg.get("type")
+            if msg_type == "agent_message" and msg.get("message"):
+                last_message = str(msg["message"])
+                segments.append({"type": "text", "text": last_message})
+            elif msg_type == "exec_command_begin":
+                detail = _codex_command_detail(msg.get("command") or "")
+                if detail:
+                    segments.append({"type": "tool", "name": "shell", "detail": detail})
+            elif msg_type == "task_complete":
+                completed = True
+                if msg.get("last_agent_message"):
+                    last_message = str(msg["last_agent_message"])
+
+    return segments, last_message, thread_id, completed
+
+
+def _run_codex_agent(prompt: str, model: str) -> dict:
+    codex = shutil.which("codex")
+    if codex is None:
+        raise LocalAgentError(
+            "The codex CLI was not found on PATH. Install Codex or switch the agent back to claude in Settings."
+        )
+
+    command = [codex, "exec", "--json"]
+    if model:
+        command += ["--model", model]
+    command += shlex.split(os.environ.get(CODEX_EXTRA_ARGS_ENV, ""))
+    command.append(prompt)
+
+    result = _run_agent_command(command, "codex")
+
+    segments, last_message, thread_id, completed = _parse_codex_stream(result.stdout)
+
+    if result.returncode != 0 or (not completed and last_message is None):
+        detail = ""
+        if result.stderr.strip():
+            detail = result.stderr.strip().splitlines()[-1]
+        message = f"The codex CLI exited with code {result.returncode}."
+        if detail:
+            message = f"{message} {detail}"
+        raise LocalAgentError(message)
+
+    text_parts = [segment["text"] for segment in segments if segment["type"] == "text"]
+    response_text = "\n\n".join(text_parts) or (last_message or "")
+
+    return {
+        "response": response_text,
+        "segments": segments,
+        "model": model or "codex default",
+        "durationMs": None,
+        "costUsd": None,
+        "sessionId": thread_id,
     }
 
 
@@ -268,7 +426,9 @@ class _LocalReviewSessionState:
     file_by_key: dict[LocalFileKey, AgentReviewFile]
     refresh_payload: RefreshPayload | None = None
     progress: ProgressReporter | None = None
+    agent_backend: str = DEFAULT_AGENT_BACKEND
     agent_model: str = DEFAULT_AGENT_MODEL
+    codex_model: str = ""
     _file_response_cache_by_key: dict[LocalFileKey, bytes] = field(default_factory=dict)
     _lock: Lock = field(default_factory=Lock)
 
@@ -315,21 +475,34 @@ class _LocalReviewSessionState:
         return session_id, payload_response
 
     def run_agent(self, prompt: str) -> dict:
-        model = self.get_agent_model()
-        _report_progress(self.progress, f"Running claude -p with model {model}.")
-        result = _run_claude_agent(prompt, model)
+        backend, claude_model, codex_model = self.get_agent_config()
+        if backend == "codex":
+            _report_progress(
+                self.progress,
+                f"Running codex exec with model {codex_model or 'codex default'}.",
+            )
+            result = _run_codex_agent(prompt, codex_model)
+        else:
+            _report_progress(self.progress, f"Running claude -p with model {claude_model}.")
+            result = _run_claude_agent(prompt, claude_model)
         _report_progress(self.progress, "The agent reply is ready.")
         return result
 
-    def get_agent_model(self) -> str:
+    def get_agent_config(self) -> tuple[str, str, str]:
         with self._lock:
-            return self.agent_model
+            return self.agent_backend, self.agent_model, self.codex_model
 
     def get_settings(self) -> dict:
+        backend, claude_model, codex_model = self.get_agent_config()
         return {
-            "model": self.get_agent_model(),
+            "agent": backend,
+            "model": claude_model,
+            "codexModel": codex_model,
+            "defaultAgent": DEFAULT_AGENT_BACKEND,
             "defaultModel": DEFAULT_AGENT_MODEL,
+            "knownAgents": list(KNOWN_AGENT_BACKENDS),
             "knownModels": KNOWN_AGENT_MODELS,
+            "knownCodexModels": KNOWN_CODEX_MODELS,
         }
 
     def update_settings(self, settings: dict) -> dict:
@@ -337,18 +510,44 @@ class _LocalReviewSessionState:
         if not isinstance(model, str) or not model.strip():
             raise LocalUiError("Settings must include a non-empty model string.")
 
+        backend = settings.get("agent", DEFAULT_AGENT_BACKEND)
+        if not isinstance(backend, str) or backend.strip().lower() not in KNOWN_AGENT_BACKENDS:
+            raise LocalUiError(
+                f"Settings agent must be one of: {', '.join(KNOWN_AGENT_BACKENDS)}."
+            )
+
+        codex_model = settings.get("codexModel", "")
+        if codex_model is None:
+            codex_model = ""
+        if not isinstance(codex_model, str):
+            raise LocalUiError("Settings codexModel must be a string.")
+
         normalized_model = model.strip()
+        normalized_backend = backend.strip().lower()
+        normalized_codex_model = codex_model.strip()
         with self._lock:
+            self.agent_backend = normalized_backend
             self.agent_model = normalized_model
+            self.codex_model = normalized_codex_model
 
         persisted = load_persisted_settings()
+        persisted["agent"] = normalized_backend
         persisted["model"] = normalized_model
+        persisted["codexModel"] = normalized_codex_model
         try:
             save_persisted_settings(persisted)
         except OSError as exc:
             raise LocalUiError(f"Failed to persist settings: {exc}") from exc
 
-        _report_progress(self.progress, f"Agent model set to {normalized_model}.")
+        active_model = (
+            normalized_codex_model or "codex default"
+            if normalized_backend == "codex"
+            else normalized_model
+        )
+        _report_progress(
+            self.progress,
+            f"Inline agent set to {normalized_backend} with model {active_model}.",
+        )
         return self.get_settings()
 
 
@@ -713,7 +912,9 @@ def _serve_static_site(
         file_by_key=file_by_key,
         refresh_payload=refresh_payload,
         progress=progress,
+        agent_backend=get_default_agent_backend(),
         agent_model=(agent_model or "").strip() or get_default_agent_model(),
+        codex_model=get_default_codex_model(),
     )
 
     handler = partial(

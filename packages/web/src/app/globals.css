@@ -736,7 +736,8 @@ html[data-theme="light"] .review-shell .bg-gray-950\/70 .text-white {
   color: #0f172a;
 }
 
-html[data-theme="light"] .review-shell .bg-blue-600.text-white {
+html[data-theme="light"] .review-shell .bg-blue-600.text-white,
+html[data-theme="light"] .home-shell .bg-blue-600.text-white {
   color: #ffffff;
 }
 
@@ -895,4 +896,12 @@ html[data-theme="light"] .agent-markdown pre {
 .agent-markdown hr {
   margin: 0.75rem 0;
   border-color: rgba(148, 163, 184, 0.25);
+}
+
+.settings-save-button {
+  color: #ffffff;
+}
+
+.settings-save-button:disabled {
+  color: #6b7280;
 }
