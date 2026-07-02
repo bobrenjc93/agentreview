@@ -791,3 +791,108 @@ html[data-theme="light"] .review-shell .bg-blue-600.text-white {
 *::-webkit-scrollbar-thumb:hover {
   background-color: var(--scrollbar-thumb-hover);
 }
+
+.agent-markdown {
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.agent-markdown > *:first-child {
+  margin-top: 0;
+}
+
+.agent-markdown > *:last-child {
+  margin-bottom: 0;
+}
+
+.agent-markdown p,
+.agent-markdown ul,
+.agent-markdown ol,
+.agent-markdown pre,
+.agent-markdown blockquote,
+.agent-markdown table {
+  margin: 0.5rem 0;
+}
+
+.agent-markdown ul {
+  list-style: disc;
+  padding-left: 1.25rem;
+}
+
+.agent-markdown ol {
+  list-style: decimal;
+  padding-left: 1.25rem;
+}
+
+.agent-markdown li + li {
+  margin-top: 0.15rem;
+}
+
+.agent-markdown h1,
+.agent-markdown h2,
+.agent-markdown h3,
+.agent-markdown h4 {
+  margin: 0.75rem 0 0.35rem;
+  font-weight: 600;
+}
+
+.agent-markdown h1 {
+  font-size: 1.05rem;
+}
+
+.agent-markdown h2 {
+  font-size: 1rem;
+}
+
+.agent-markdown h3,
+.agent-markdown h4 {
+  font-size: 0.92rem;
+}
+
+.agent-markdown code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85em;
+  background: rgba(148, 163, 184, 0.14);
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+}
+
+.agent-markdown pre {
+  background: rgba(2, 6, 23, 0.55);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 6px;
+  padding: 0.6rem 0.75rem;
+  overflow-x: auto;
+}
+
+html[data-theme="light"] .agent-markdown pre {
+  background: rgba(241, 245, 249, 0.9);
+}
+
+.agent-markdown pre code {
+  background: none;
+  padding: 0;
+  font-size: 0.8rem;
+}
+
+.agent-markdown blockquote {
+  border-left: 3px solid rgba(148, 163, 184, 0.4);
+  padding-left: 0.75rem;
+  color: rgba(148, 163, 184, 0.95);
+}
+
+.agent-markdown table {
+  border-collapse: collapse;
+}
+
+.agent-markdown th,
+.agent-markdown td {
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  padding: 0.25rem 0.6rem;
+  text-align: left;
+}
+
+.agent-markdown hr {
+  margin: 0.75rem 0;
+  border-color: rgba(148, 163, 184, 0.25);
+}

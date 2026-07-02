@@ -62,7 +62,8 @@ Notes:
   --local serves the bundled web UI locally instead of printing a payload blob.
   Set BASE_URL to rewrite the printed/opened --local URL for proxied dev environments.
   In --local mode, inline comments are answered by `claude -p`. Pick the model with
-  --model or AGENTREVIEW_MODEL (default: claude-opus-4-8).
+  --model, AGENTREVIEW_MODEL, or the web UI settings page (default: claude-opus-4-8).
+  The settings page persists the model to ~/.config/agentreview/settings.json.
   --uncommitted only affects --branch and --commit. Plain agentreview still reviews your working tree.
   COMMIT can be any git commit-ish or Sapling revision identifier.
 

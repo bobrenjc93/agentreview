@@ -2,6 +2,13 @@ export type ReviewCommentSide = "old" | "new";
 export type ReviewCommentKind = "line" | "segment";
 export type CommentAgentStatus = "pending" | "done" | "error";
 
+export interface CommentAgentSegment {
+  type: "text" | "tool";
+  text?: string;
+  name?: string;
+  detail?: string;
+}
+
 interface CommentLineRange {
   startLineNumber: number;
   endLineNumber: number;
@@ -30,6 +37,7 @@ export interface ReviewComment {
   createdAt: string;
   agentStatus?: CommentAgentStatus;
   agentReply?: string;
+  agentSegments?: CommentAgentSegment[];
   agentError?: string;
   agentModel?: string;
   agentDurationMs?: number;

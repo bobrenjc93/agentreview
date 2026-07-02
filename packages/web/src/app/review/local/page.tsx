@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { ReviewLayout } from "@/components/ReviewLayout";
-import { type AgentReplyResult } from "@/lib/comments/agent";
+import { isAgentReplySegment, type AgentReplyResult } from "@/lib/comments/agent";
 import { type AgentReviewPayload } from "@/lib/payload/types";
 import { asPayload } from "@/lib/payload/validate";
 
@@ -165,6 +165,7 @@ export default function LocalReviewPage() {
       );
       const data = (await response.json()) as {
         response?: unknown;
+        segments?: unknown;
         model?: unknown;
         durationMs?: unknown;
         costUsd?: unknown;
@@ -185,6 +186,9 @@ export default function LocalReviewPage() {
 
       return {
         response: data.response,
+        segments: Array.isArray(data.segments)
+          ? data.segments.filter(isAgentReplySegment)
+          : undefined,
         model: typeof data.model === "string" ? data.model : undefined,
         durationMs:
           typeof data.durationMs === "number" ? data.durationMs : undefined,

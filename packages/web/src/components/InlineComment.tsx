@@ -5,6 +5,7 @@ import {
   type ReviewComment,
   formatReviewCommentRange,
 } from "@/lib/comments/types";
+import { AgentReplyBody } from "./AgentMarkdown";
 import { InlineCommentForm } from "./InlineCommentForm";
 
 interface InlineCommentProps {
@@ -67,9 +68,10 @@ function AgentReplySection({
       <p className="mb-1 text-[11px] text-cyan-400/90">
         {formatAgentReplyNote(comment)}
       </p>
-      <p className="text-sm text-gray-300 whitespace-pre-wrap">
-        {comment.agentReply}
-      </p>
+      <AgentReplyBody
+        segments={comment.agentSegments}
+        fallbackText={comment.agentReply}
+      />
     </div>
   );
 }

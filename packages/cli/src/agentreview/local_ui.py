@@ -31,6 +31,7 @@ LOCAL_PAYLOAD_ENDPOINT = "/__agentreview__/payload"
 LOCAL_FILE_ENDPOINT = "/__agentreview__/file"
 LOCAL_REFRESH_ENDPOINT = "/__agentreview__/refresh"
 LOCAL_AGENT_ENDPOINT = "/__agentreview__/agent"
+LOCAL_SETTINGS_ENDPOINT = "/__agentreview__/settings"
 LOCAL_UI_ARCHIVE_NAME = "local_ui_assets.tar.gz"
 LOCAL_UI_BASE_URL_ENV = "BASE_URL"
 DEFAULT_AGENT_MODEL = "claude-opus-4-8"
@@ -38,6 +39,39 @@ AGENT_MODEL_ENV = "AGENTREVIEW_MODEL"
 AGENT_EXTRA_ARGS_ENV = "AGENTREVIEW_CLAUDE_ARGS"
 AGENT_TIMEOUT_SECONDS = 600
 AGENT_MAX_PROMPT_BYTES = 1024 * 1024
+AGENT_TOOL_DETAIL_MAX_CHARS = 120
+SETTINGS_MAX_BODY_BYTES = 64 * 1024
+# the most informative input field per tool, used for one-line tool summaries
+AGENT_TOOL_DETAIL_KEYS = {
+    "Bash": ["command"],
+    "Skill": ["skill", "args"],
+    "Task": ["description"],
+    "Agent": ["description"],
+    "WebFetch": ["url"],
+    "WebSearch": ["query"],
+    "Grep": ["pattern"],
+    "Glob": ["pattern"],
+}
+AGENT_TOOL_DETAIL_FALLBACK_KEYS = [
+    "file_path",
+    "path",
+    "description",
+    "prompt",
+    "query",
+    "command",
+]
+# The claude CLI has no command to enumerate models, so this is a curated
+# list of aliases/ids it accepts; free-form input is always allowed.
+KNOWN_AGENT_MODELS = [
+    "claude-opus-4-8",
+    "claude-fable-5",
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5-20251001",
+    "opus",
+    "sonnet",
+    "haiku",
+    "fable",
+]
 LOCAL_FALLBACK_SEGMENT_ID = "all-changes"
 LOCAL_CACHE_BUSTER_QUERY_KEY = "agentreviewSession"
 ProgressReporter = Callable[[str], None]
@@ -53,8 +87,100 @@ class LocalAgentError(RuntimeError):
     pass
 
 
+def _get_settings_path() -> Path:
+    config_home = os.environ.get("XDG_CONFIG_HOME", "").strip() or str(Path.home() / ".config")
+    return Path(config_home) / "agentreview" / "settings.json"
+
+
+def load_persisted_settings() -> dict:
+    try:
+        data = json.loads(_get_settings_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_persisted_settings(settings: dict) -> None:
+    path = _get_settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+
+
 def get_default_agent_model() -> str:
-    return os.environ.get(AGENT_MODEL_ENV, "").strip() or DEFAULT_AGENT_MODEL
+    env_model = os.environ.get(AGENT_MODEL_ENV, "").strip()
+    if env_model:
+        return env_model
+
+    saved_model = load_persisted_settings().get("model")
+    if isinstance(saved_model, str) and saved_model.strip():
+        return saved_model.strip()
+
+    return DEFAULT_AGENT_MODEL
+
+
+def _truncate_tool_detail(detail: str) -> str:
+    collapsed = " ".join(detail.split())
+    if len(collapsed) > AGENT_TOOL_DETAIL_MAX_CHARS:
+        return collapsed[:AGENT_TOOL_DETAIL_MAX_CHARS] + "…"
+    return collapsed
+
+
+def _summarize_tool_use(block: dict) -> dict | None:
+    """One-line summary of a tool_use block, e.g. Bash: git status."""
+    name = str(block.get("name") or "tool")
+    inputs = block.get("input")
+    if not isinstance(inputs, dict):
+        inputs = {}
+
+    for key in AGENT_TOOL_DETAIL_KEYS.get(name, []) + AGENT_TOOL_DETAIL_FALLBACK_KEYS:
+        value = inputs.get(key)
+        if value:
+            detail = str(value)
+            if key == "skill" and inputs.get("args"):
+                detail += f" {inputs['args']}"
+            return {"type": "tool", "name": name, "detail": _truncate_tool_detail(detail)}
+
+    if inputs:
+        return {
+            "type": "tool",
+            "name": name,
+            "detail": _truncate_tool_detail(json.dumps(inputs)),
+        }
+
+    return None
+
+
+def _parse_agent_stream(stdout: str) -> tuple[list[dict], dict | None, str | None]:
+    segments: list[dict] = []
+    result_event: dict | None = None
+    session_id: str | None = None
+
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+
+        event_type = event.get("type")
+        if event_type == "system" and event.get("subtype") == "init":
+            session_id = event.get("session_id")
+        elif event_type == "assistant":
+            for block in event.get("message", {}).get("content", []) or []:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "text" and block.get("text"):
+                    segments.append({"type": "text", "text": block["text"]})
+                elif block.get("type") == "tool_use":
+                    summary = _summarize_tool_use(block)
+                    if summary is not None:
+                        segments.append(summary)
+        elif event_type == "result":
+            result_event = event
+            session_id = event.get("session_id", session_id)
+
+    return segments, result_event, session_id
 
 
 def _run_claude_agent(prompt: str, model: str) -> dict:
@@ -64,7 +190,7 @@ def _run_claude_agent(prompt: str, model: str) -> dict:
             "The claude CLI was not found on PATH. Install Claude Code to use inline agent replies."
         )
 
-    command = [claude, "-p", prompt, "--output-format", "json"]
+    command = [claude, "-p", prompt, "--output-format", "stream-json", "--verbose"]
     if model:
         command += ["--model", model]
     command += shlex.split(os.environ.get(AGENT_EXTRA_ARGS_ENV, ""))
@@ -84,15 +210,12 @@ def _run_claude_agent(prompt: str, model: str) -> dict:
     except OSError as exc:
         raise LocalAgentError(f"Failed to launch the claude CLI: {exc}") from exc
 
-    try:
-        event = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        event = None
+    segments, result_event, session_id = _parse_agent_stream(result.stdout)
 
-    if result.returncode != 0 or not isinstance(event, dict) or event.get("is_error"):
+    if result.returncode != 0 or result_event is None or result_event.get("is_error"):
         detail = ""
-        if isinstance(event, dict) and event.get("result"):
-            detail = str(event["result"])
+        if result_event and result_event.get("result"):
+            detail = str(result_event["result"])
         elif result.stderr.strip():
             detail = result.stderr.strip().splitlines()[-1]
         message = f"The claude CLI exited with code {result.returncode}."
@@ -100,12 +223,16 @@ def _run_claude_agent(prompt: str, model: str) -> dict:
             message = f"{message} {detail}"
         raise LocalAgentError(message)
 
+    text_parts = [segment["text"] for segment in segments if segment["type"] == "text"]
+    response_text = "\n\n".join(text_parts) or str(result_event.get("result") or "")
+
     return {
-        "response": str(event.get("result") or ""),
+        "response": response_text,
+        "segments": segments,
         "model": model,
-        "durationMs": event.get("duration_ms"),
-        "costUsd": event.get("total_cost_usd"),
-        "sessionId": event.get("session_id"),
+        "durationMs": result_event.get("duration_ms"),
+        "costUsd": result_event.get("total_cost_usd"),
+        "sessionId": session_id,
     }
 
 
@@ -188,11 +315,41 @@ class _LocalReviewSessionState:
         return session_id, payload_response
 
     def run_agent(self, prompt: str) -> dict:
-        model = self.agent_model
+        model = self.get_agent_model()
         _report_progress(self.progress, f"Running claude -p with model {model}.")
         result = _run_claude_agent(prompt, model)
         _report_progress(self.progress, "The agent reply is ready.")
         return result
+
+    def get_agent_model(self) -> str:
+        with self._lock:
+            return self.agent_model
+
+    def get_settings(self) -> dict:
+        return {
+            "model": self.get_agent_model(),
+            "defaultModel": DEFAULT_AGENT_MODEL,
+            "knownModels": KNOWN_AGENT_MODELS,
+        }
+
+    def update_settings(self, settings: dict) -> dict:
+        model = settings.get("model")
+        if not isinstance(model, str) or not model.strip():
+            raise LocalUiError("Settings must include a non-empty model string.")
+
+        normalized_model = model.strip()
+        with self._lock:
+            self.agent_model = normalized_model
+
+        persisted = load_persisted_settings()
+        persisted["model"] = normalized_model
+        try:
+            save_persisted_settings(persisted)
+        except OSError as exc:
+            raise LocalUiError(f"Failed to persist settings: {exc}") from exc
+
+        _report_progress(self.progress, f"Agent model set to {normalized_model}.")
+        return self.get_settings()
 
 
 class _LocalUiRequestHandler(SimpleHTTPRequestHandler):
@@ -211,6 +368,8 @@ class _LocalUiRequestHandler(SimpleHTTPRequestHandler):
             return
         if self._maybe_serve_file(send_body=True):
             return
+        if self._maybe_serve_settings(method="GET"):
+            return
         self._rewrite_static_path()
         super().do_GET()
 
@@ -226,6 +385,8 @@ class _LocalUiRequestHandler(SimpleHTTPRequestHandler):
         if self._maybe_serve_refresh(send_body=True):
             return
         if self._maybe_serve_agent():
+            return
+        if self._maybe_serve_settings(method="POST"):
             return
         self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -390,6 +551,54 @@ class _LocalUiRequestHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(response)
         return True
+
+    def _maybe_serve_settings(self, *, method: str) -> bool:
+        split = urlsplit(self.path)
+        if split.path != LOCAL_SETTINGS_ENDPOINT:
+            return False
+
+        if method == "GET":
+            self._send_json(HTTPStatus.OK, self._session_state.get_settings())
+            return True
+
+        content_length = int(self.headers.get("Content-Length") or 0)
+        if content_length <= 0 or content_length > SETTINGS_MAX_BODY_BYTES:
+            self._send_json_error(
+                HTTPStatus.BAD_REQUEST,
+                "A JSON settings body is required.",
+                send_body=True,
+            )
+            return True
+
+        try:
+            body = json.loads(self.rfile.read(content_length).decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            body = None
+
+        if not isinstance(body, dict):
+            self._send_json_error(
+                HTTPStatus.BAD_REQUEST,
+                "A JSON settings object is required.",
+                send_body=True,
+            )
+            return True
+
+        try:
+            settings = self._session_state.update_settings(body)
+        except LocalUiError as exc:
+            self._send_json_error(HTTPStatus.BAD_REQUEST, str(exc), send_body=True)
+            return True
+
+        self._send_json(HTTPStatus.OK, settings)
+        return True
+
+    def _send_json(self, status: HTTPStatus, payload: dict) -> None:
+        response = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(response)))
+        self.end_headers()
+        self.wfile.write(response)
 
     def _send_json_error(
         self,

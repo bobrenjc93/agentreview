@@ -51,7 +51,7 @@ Add `--uncommitted` to `--branch` or `--commit` to also include working tree cha
 | Flag | Description |
 |---|---|
 | `--local` | Launch the local web UI instead of printing a payload |
-| `--model MODEL` | Model used for inline agent replies in `--local` mode (also via `AGENTREVIEW_MODEL`; default: `claude-opus-4-8`) |
+| `--model MODEL` | Model used for inline agent replies in `--local` mode (also via `AGENTREVIEW_MODEL` or the web UI settings page; default: `claude-opus-4-8`) |
 | `-v, --verbose` | Print timestamped progress to stderr |
 | `--version` | Print version and exit |
 
@@ -88,7 +88,8 @@ The web interface is available at [agentreview-web.vercel.app](https://agentrevi
 - **Unified and split diff views** -- toggle between inline and side-by-side
 - **Syntax highlighting** -- powered by Shiki with 26+ language grammars
 - **Inline comments** -- add line-level and segment-level comments with edit/delete
-- **Inline agent replies** -- in `--local` mode, each comment is answered inline by `claude -p` (pick the model with `--model` or `AGENTREVIEW_MODEL`; extra CLI flags via `AGENTREVIEW_CLAUDE_ARGS`)
+- **Inline agent replies** -- in `--local` mode, each comment is answered inline by `claude -p`, with markdown rendering and one-line summaries of the tool calls the agent made (pick the model with `--model` or `AGENTREVIEW_MODEL`; extra CLI flags via `AGENTREVIEW_CLAUDE_ARGS`)
+- **Settings page** -- configure the agent model at `/settings`; the choice persists to `~/.config/agentreview/settings.json` (and browser localStorage) and applies to future `--local` runs
 - **Commit segments** -- navigate individual commits when reviewing branch/commit ranges
 - **Code folding** -- collapse unchanged sections in large diffs
 - **Context expansion** -- reveal hidden context lines in diff gaps

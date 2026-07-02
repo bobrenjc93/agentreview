@@ -26,8 +26,11 @@ from agentreview.local_ui import (
     LocalAgentError,
     LocalUiError,
     _LocalReviewSessionState,
+    _parse_agent_stream,
     _run_claude_agent,
     get_default_agent_model,
+    load_persisted_settings,
+    save_persisted_settings,
     _build_local_payload_manifest,
     _build_local_payload_response,
     _get_listening_process_ports,
@@ -1368,7 +1371,8 @@ class LocalUiTests(unittest.TestCase):
 
 
 class LocalAgentTests(unittest.TestCase):
-    def test_default_agent_model_is_opus(self) -> None:
+    @patch("agentreview.local_ui.load_persisted_settings", return_value={})
+    def test_default_agent_model_is_opus(self, load_settings_mock) -> None:
         with patch.dict("os.environ", {}, clear=False):
             import os
 
@@ -1380,22 +1384,126 @@ class LocalAgentTests(unittest.TestCase):
         with patch.dict("os.environ", {"AGENTREVIEW_MODEL": "claude-sonnet-5"}):
             self.assertEqual(get_default_agent_model(), "claude-sonnet-5")
 
+    @patch("agentreview.local_ui.load_persisted_settings", return_value={"model": "claude-fable-5"})
+    def test_default_agent_model_reads_persisted_settings(self, load_settings_mock) -> None:
+        with patch.dict("os.environ", {}, clear=False):
+            import os
+
+            os.environ.pop("AGENTREVIEW_MODEL", None)
+            self.assertEqual(get_default_agent_model(), "claude-fable-5")
+
+    def test_settings_persist_round_trip_on_disk(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            with patch.dict("os.environ", {"XDG_CONFIG_HOME": temp_dir}):
+                save_persisted_settings({"model": "claude-fable-5"})
+                self.assertEqual(
+                    load_persisted_settings(), {"model": "claude-fable-5"}
+                )
+                settings_path = Path(temp_dir) / "agentreview" / "settings.json"
+                self.assertTrue(settings_path.is_file())
+
+    def test_session_state_update_settings_changes_model_and_persists(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            with patch.dict("os.environ", {"XDG_CONFIG_HOME": temp_dir}):
+                session_state = _LocalReviewSessionState(
+                    session_id="local-test",
+                    payload_response=b"{}",
+                    file_by_key={},
+                    agent_model="claude-opus-4-8",
+                )
+
+                settings = session_state.update_settings({"model": "claude-fable-5"})
+
+                self.assertEqual(settings["model"], "claude-fable-5")
+                self.assertEqual(session_state.get_agent_model(), "claude-fable-5")
+                self.assertEqual(
+                    load_persisted_settings().get("model"), "claude-fable-5"
+                )
+
+    def test_session_state_update_settings_rejects_empty_model(self) -> None:
+        session_state = _LocalReviewSessionState(
+            session_id="local-test",
+            payload_response=b"{}",
+            file_by_key={},
+        )
+
+        with self.assertRaises(LocalUiError):
+            session_state.update_settings({"model": "  "})
+
+    def test_parse_agent_stream_extracts_text_and_tool_segments(self) -> None:
+        stream = "\n".join(
+            [
+                json.dumps({"type": "system", "subtype": "init", "session_id": "sess-1"}),
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "content": [
+                                {"type": "text", "text": "Let me check."},
+                                {
+                                    "type": "tool_use",
+                                    "name": "Bash",
+                                    "input": {"command": "git log --oneline -3"},
+                                },
+                            ]
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "content": [{"type": "text", "text": "All good — **ship it**."}]
+                        },
+                    }
+                ),
+                json.dumps({"type": "result", "is_error": False, "result": "final"}),
+            ]
+        )
+
+        segments, result_event, session_id = _parse_agent_stream(stream)
+
+        self.assertEqual(session_id, "sess-1")
+        self.assertIsNotNone(result_event)
+        self.assertEqual(
+            segments,
+            [
+                {"type": "text", "text": "Let me check."},
+                {"type": "tool", "name": "Bash", "detail": "git log --oneline -3"},
+                {"type": "text", "text": "All good — **ship it**."},
+            ],
+        )
+
     @patch("agentreview.local_ui.subprocess.run")
     @patch("agentreview.local_ui.shutil.which", return_value="/usr/bin/claude")
     def test_run_claude_agent_invokes_claude_p_with_model(self, which_mock, run_mock) -> None:
+        stream = "\n".join(
+            [
+                json.dumps({"type": "system", "subtype": "init", "session_id": "sess-1"}),
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "content": [{"type": "text", "text": "Looks fine to me."}]
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "result",
+                        "is_error": False,
+                        "result": "Looks fine to me.",
+                        "duration_ms": 1234,
+                        "total_cost_usd": 0.05,
+                        "session_id": "sess-1",
+                    }
+                ),
+            ]
+        )
         run_mock.return_value = subprocess.CompletedProcess(
             args=["claude"],
             returncode=0,
-            stdout=json.dumps(
-                {
-                    "type": "result",
-                    "is_error": False,
-                    "result": "Looks fine to me.",
-                    "duration_ms": 1234,
-                    "total_cost_usd": 0.05,
-                    "session_id": "sess-1",
-                }
-            ),
+            stdout=stream,
             stderr="",
         )
 
@@ -1403,12 +1511,14 @@ class LocalAgentTests(unittest.TestCase):
 
         command = run_mock.call_args.args[0]
         self.assertEqual(command[1:3], ["-p", "Why is this loop O(n^2)?"])
-        self.assertIn("--output-format", command)
+        self.assertIn("stream-json", command)
         self.assertEqual(command[command.index("--model") + 1], "claude-opus-4-8")
         self.assertEqual(result["response"], "Looks fine to me.")
+        self.assertEqual(result["segments"][0]["type"], "text")
         self.assertEqual(result["model"], "claude-opus-4-8")
         self.assertEqual(result["durationMs"], 1234)
         self.assertEqual(result["costUsd"], 0.05)
+        self.assertEqual(result["sessionId"], "sess-1")
 
     @patch("agentreview.local_ui.shutil.which", return_value=None)
     def test_run_claude_agent_errors_when_claude_missing(self, which_mock) -> None:

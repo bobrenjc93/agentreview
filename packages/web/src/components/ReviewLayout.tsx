@@ -1356,6 +1356,13 @@ export function ReviewLayout({
               <span className="font-mono text-xs text-gray-600">{payload.meta.commitHash}</span>
             </div>
             <div className="flex flex-wrap items-center justify-end gap-3">
+              <a
+                href="/settings"
+                className="text-sm text-gray-400 transition-colors hover:text-white"
+                title="Configure the inline agent model"
+              >
+                Settings
+              </a>
               {onRefresh ? (
                 <button
                   type="button"

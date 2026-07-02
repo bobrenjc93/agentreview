@@ -5,11 +5,27 @@ import {
   isSegmentComment,
 } from "./types";
 
+export interface AgentReplySegment {
+  type: "text" | "tool";
+  text?: string;
+  name?: string;
+  detail?: string;
+}
+
 export interface AgentReplyResult {
   response: string;
+  segments?: AgentReplySegment[];
   model?: string;
   durationMs?: number;
   costUsd?: number;
+}
+
+export function isAgentReplySegment(value: unknown): value is AgentReplySegment {
+  if (!value || typeof value !== "object") return false;
+  const segment = value as AgentReplySegment;
+  if (segment.type === "text") return typeof segment.text === "string";
+  if (segment.type === "tool") return typeof segment.name === "string";
+  return false;
 }
 
 export type RunAgent = (prompt: string) => Promise<AgentReplyResult>;
