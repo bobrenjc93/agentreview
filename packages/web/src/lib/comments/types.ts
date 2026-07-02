@@ -36,6 +36,8 @@ export interface ReviewComment {
   body: string;
   createdAt: string;
   agentStatus?: CommentAgentStatus;
+  agentStartedAt?: string;
+  agentFinishedAt?: string;
   agentReply?: string;
   agentSegments?: CommentAgentSegment[];
   agentError?: string;

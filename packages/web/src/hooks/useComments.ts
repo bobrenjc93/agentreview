@@ -77,6 +77,8 @@ export function useCommentsProvider(sessionId: string, runAgent?: RunAgent) {
           ? {
               ...comment,
               agentStatus: "pending",
+              agentStartedAt: new Date().toISOString(),
+              agentFinishedAt: undefined,
               agentReply: undefined,
               agentSegments: undefined,
               agentError: undefined,
@@ -93,6 +95,7 @@ export function useCommentsProvider(sessionId: string, runAgent?: RunAgent) {
               ? {
                   ...comment,
                   agentStatus: "done",
+                  agentFinishedAt: new Date().toISOString(),
                   agentReply: result.response,
                   agentSegments: result.segments,
                   agentError: undefined,

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   type ReviewComment,
   formatReviewCommentRange,
@@ -19,11 +19,59 @@ function formatAgentReplyNote(comment: ReviewComment): string {
   const parts: string[] = [comment.agentModel || "agent"];
   if (typeof comment.agentDurationMs === "number") {
     parts.push(`${(comment.agentDurationMs / 1000).toFixed(1)}s`);
+  } else if (comment.agentFinishedAt && comment.agentStartedAt) {
+    const elapsedMs =
+      Date.parse(comment.agentFinishedAt) - Date.parse(comment.agentStartedAt);
+    if (Number.isFinite(elapsedMs) && elapsedMs >= 0) {
+      parts.push(`${(elapsedMs / 1000).toFixed(1)}s`);
+    }
   }
   if (typeof comment.agentCostUsd === "number") {
     parts.push(`$${comment.agentCostUsd.toFixed(2)}`);
   }
   return parts.join(" · ");
+}
+
+function formatElapsedSeconds(elapsedSeconds: number): string {
+  if (elapsedSeconds < 60) {
+    return `${elapsedSeconds}s`;
+  }
+  const minutes = Math.floor(elapsedSeconds / 60);
+  const seconds = elapsedSeconds % 60;
+  return `${minutes}m ${seconds}s`;
+}
+
+function AgentPendingIndicator({ startedAt }: { startedAt?: string }) {
+  const [elapsedSeconds, setElapsedSeconds] = useState(() =>
+    getElapsedSeconds(startedAt)
+  );
+
+  useEffect(() => {
+    setElapsedSeconds(getElapsedSeconds(startedAt));
+    const interval = window.setInterval(() => {
+      setElapsedSeconds(getElapsedSeconds(startedAt));
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [startedAt]);
+
+  return (
+    <div className="mt-2 flex items-center gap-2 border-t border-gray-700 pt-2">
+      <span className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-cyan-400/30 border-t-cyan-400" />
+      <p className="text-xs text-gray-400">
+        Agent is thinking…
+        <span className="ml-1.5 font-mono tabular-nums text-cyan-400/90">
+          {formatElapsedSeconds(elapsedSeconds)}
+        </span>
+      </p>
+    </div>
+  );
+}
+
+function getElapsedSeconds(startedAt?: string): number {
+  if (!startedAt) return 0;
+  const startedMs = Date.parse(startedAt);
+  if (Number.isNaN(startedMs)) return 0;
+  return Math.max(0, Math.floor((Date.now() - startedMs) / 1000));
 }
 
 function AgentReplySection({
@@ -36,12 +84,7 @@ function AgentReplySection({
   if (!comment.agentStatus) return null;
 
   if (comment.agentStatus === "pending") {
-    return (
-      <div className="mt-2 flex items-center gap-2 border-t border-gray-700 pt-2">
-        <span className="h-2 w-2 animate-pulse rounded-full bg-cyan-400/80" />
-        <p className="text-xs text-gray-400">Agent is thinking…</p>
-      </div>
-    );
+    return <AgentPendingIndicator startedAt={comment.agentStartedAt} />;
   }
 
   if (comment.agentStatus === "error") {
