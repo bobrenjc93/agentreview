@@ -19,11 +19,15 @@ from agentreview.git.files import get_file_contents, get_file_contents_for_revis
 from agentreview.git.metadata import get_metadata
 from agentreview.git.segments import get_review_segments
 from agentreview.local_ui import (
+    DEFAULT_AGENT_MODEL,
     LOCAL_FALLBACK_SEGMENT_ID,
     LOCAL_UI_BASE_URL_ENV,
     LOCAL_SERVER_START_PORT,
+    LocalAgentError,
     LocalUiError,
     _LocalReviewSessionState,
+    _run_claude_agent,
+    get_default_agent_model,
     _build_local_payload_manifest,
     _build_local_payload_response,
     _get_listening_process_ports,
@@ -642,7 +646,7 @@ class CliModeValidationTests(unittest.TestCase):
         self,
         distribution_version_mock,
     ) -> None:
-        pyproject = Path("/Users/bobren/projects/agentreview/packages/cli/pyproject.toml")
+        pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
         self.assertIn('version = "', pyproject.read_text(encoding="utf-8"))
         expected_version = pyproject.read_text(encoding="utf-8").split('version = "', 1)[1].split(
             '"',
@@ -1361,6 +1365,85 @@ class LocalUiTests(unittest.TestCase):
             "def456",
         )
         self.assertIn((LOCAL_FALLBACK_SEGMENT_ID, "after.py"), current_file_by_key)
+
+
+class LocalAgentTests(unittest.TestCase):
+    def test_default_agent_model_is_opus(self) -> None:
+        with patch.dict("os.environ", {}, clear=False):
+            import os
+
+            os.environ.pop("AGENTREVIEW_MODEL", None)
+            self.assertEqual(get_default_agent_model(), DEFAULT_AGENT_MODEL)
+            self.assertEqual(DEFAULT_AGENT_MODEL, "claude-opus-4-8")
+
+    def test_default_agent_model_env_override(self) -> None:
+        with patch.dict("os.environ", {"AGENTREVIEW_MODEL": "claude-sonnet-5"}):
+            self.assertEqual(get_default_agent_model(), "claude-sonnet-5")
+
+    @patch("agentreview.local_ui.subprocess.run")
+    @patch("agentreview.local_ui.shutil.which", return_value="/usr/bin/claude")
+    def test_run_claude_agent_invokes_claude_p_with_model(self, which_mock, run_mock) -> None:
+        run_mock.return_value = subprocess.CompletedProcess(
+            args=["claude"],
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "type": "result",
+                    "is_error": False,
+                    "result": "Looks fine to me.",
+                    "duration_ms": 1234,
+                    "total_cost_usd": 0.05,
+                    "session_id": "sess-1",
+                }
+            ),
+            stderr="",
+        )
+
+        result = _run_claude_agent("Why is this loop O(n^2)?", "claude-opus-4-8")
+
+        command = run_mock.call_args.args[0]
+        self.assertEqual(command[1:3], ["-p", "Why is this loop O(n^2)?"])
+        self.assertIn("--output-format", command)
+        self.assertEqual(command[command.index("--model") + 1], "claude-opus-4-8")
+        self.assertEqual(result["response"], "Looks fine to me.")
+        self.assertEqual(result["model"], "claude-opus-4-8")
+        self.assertEqual(result["durationMs"], 1234)
+        self.assertEqual(result["costUsd"], 0.05)
+
+    @patch("agentreview.local_ui.shutil.which", return_value=None)
+    def test_run_claude_agent_errors_when_claude_missing(self, which_mock) -> None:
+        with self.assertRaises(LocalAgentError):
+            _run_claude_agent("prompt", "claude-opus-4-8")
+
+    @patch("agentreview.local_ui.subprocess.run")
+    @patch("agentreview.local_ui.shutil.which", return_value="/usr/bin/claude")
+    def test_run_claude_agent_surfaces_cli_failure(self, which_mock, run_mock) -> None:
+        run_mock.return_value = subprocess.CompletedProcess(
+            args=["claude"],
+            returncode=1,
+            stdout="",
+            stderr="something exploded",
+        )
+
+        with self.assertRaises(LocalAgentError) as ctx:
+            _run_claude_agent("prompt", "claude-opus-4-8")
+
+        self.assertIn("something exploded", str(ctx.exception))
+
+    @patch("agentreview.local_ui._run_claude_agent")
+    def test_session_state_run_agent_uses_configured_model(self, run_agent_mock) -> None:
+        run_agent_mock.return_value = {"response": "ok", "model": "my-model"}
+        session_state = _LocalReviewSessionState(
+            session_id="local-test",
+            payload_response=b"{}",
+            file_by_key={},
+            agent_model="my-model",
+        )
+
+        result = session_state.run_agent("hello")
+
+        run_agent_mock.assert_called_once_with("hello", "my-model")
+        self.assertEqual(result["response"], "ok")
 
 
 class MetadataTests(unittest.TestCase):

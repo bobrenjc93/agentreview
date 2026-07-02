@@ -1,5 +1,6 @@
 export type ReviewCommentSide = "old" | "new";
 export type ReviewCommentKind = "line" | "segment";
+export type CommentAgentStatus = "pending" | "done" | "error";
 
 interface CommentLineRange {
   startLineNumber: number;
@@ -27,6 +28,12 @@ export interface ReviewComment {
   lineContents?: string[];
   body: string;
   createdAt: string;
+  agentStatus?: CommentAgentStatus;
+  agentReply?: string;
+  agentError?: string;
+  agentModel?: string;
+  agentDurationMs?: number;
+  agentCostUsd?: number;
 }
 
 export type NewReviewComment = Omit<ReviewComment, "id" | "createdAt">;

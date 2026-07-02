@@ -21,6 +21,7 @@ import {
 import { PayloadContext } from "@/hooks/usePayload";
 import { CommentsContext, useCommentsProvider } from "@/hooks/useComments";
 import { type ReviewComment, isSegmentComment } from "@/lib/comments/types";
+import { type RunAgent } from "@/lib/comments/agent";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { generateExportPrompt } from "@/lib/export/prompt";
 import { generateExportDiff } from "@/lib/export/diff";
@@ -39,6 +40,7 @@ interface ReviewLayoutProps {
     segmentId: string,
     filePath: string
   ) => Promise<{ source?: string; oldSource?: string }>;
+  runAgent?: RunAgent;
   onRefresh?: () => Promise<void>;
   isRefreshing?: boolean;
   refreshError?: string | null;
@@ -433,6 +435,7 @@ export function ReviewLayout({
   payload,
   sessionId,
   loadFileDetails,
+  runAgent,
   onRefresh,
   isRefreshing = false,
   refreshError = null,
@@ -514,7 +517,7 @@ export function ReviewLayout({
   const [addingSegmentCommentId, setAddingSegmentCommentId] = useState<string | null>(null);
   const [pendingSegmentId, setPendingSegmentId] = useState<string | null>(null);
   const [isSwitchingSegment, startSegmentTransition] = useTransition();
-  const commentsValue = useCommentsProvider(sessionId);
+  const commentsValue = useCommentsProvider(sessionId, runAgent);
   const commentsCount = commentsValue.comments.length;
   const exportCopyResetTimersRef = useRef<Map<string, number>>(new Map());
 
@@ -1770,6 +1773,7 @@ export function ReviewLayout({
                               comment={comment}
                               onEdit={commentsValue.updateComment}
                               onDelete={commentsValue.removeComment}
+                              onRetryAgent={commentsValue.retryAgentReply}
                             />
                           ))}
                         </div>

@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -29,8 +30,14 @@ LOCAL_REVIEW_PATH = "/review/local"
 LOCAL_PAYLOAD_ENDPOINT = "/__agentreview__/payload"
 LOCAL_FILE_ENDPOINT = "/__agentreview__/file"
 LOCAL_REFRESH_ENDPOINT = "/__agentreview__/refresh"
+LOCAL_AGENT_ENDPOINT = "/__agentreview__/agent"
 LOCAL_UI_ARCHIVE_NAME = "local_ui_assets.tar.gz"
 LOCAL_UI_BASE_URL_ENV = "BASE_URL"
+DEFAULT_AGENT_MODEL = "claude-opus-4-8"
+AGENT_MODEL_ENV = "AGENTREVIEW_MODEL"
+AGENT_EXTRA_ARGS_ENV = "AGENTREVIEW_CLAUDE_ARGS"
+AGENT_TIMEOUT_SECONDS = 600
+AGENT_MAX_PROMPT_BYTES = 1024 * 1024
 LOCAL_FALLBACK_SEGMENT_ID = "all-changes"
 LOCAL_CACHE_BUSTER_QUERY_KEY = "agentreviewSession"
 ProgressReporter = Callable[[str], None]
@@ -40,6 +47,66 @@ LocalFileKey = tuple[str, str]
 
 class LocalUiError(RuntimeError):
     pass
+
+
+class LocalAgentError(RuntimeError):
+    pass
+
+
+def get_default_agent_model() -> str:
+    return os.environ.get(AGENT_MODEL_ENV, "").strip() or DEFAULT_AGENT_MODEL
+
+
+def _run_claude_agent(prompt: str, model: str) -> dict:
+    claude = shutil.which("claude")
+    if claude is None:
+        raise LocalAgentError(
+            "The claude CLI was not found on PATH. Install Claude Code to use inline agent replies."
+        )
+
+    command = [claude, "-p", prompt, "--output-format", "json"]
+    if model:
+        command += ["--model", model]
+    command += shlex.split(os.environ.get(AGENT_EXTRA_ARGS_ENV, ""))
+
+    try:
+        result = subprocess.run(
+            command,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=AGENT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise LocalAgentError(
+            f"The agent run timed out after {AGENT_TIMEOUT_SECONDS} seconds."
+        ) from exc
+    except OSError as exc:
+        raise LocalAgentError(f"Failed to launch the claude CLI: {exc}") from exc
+
+    try:
+        event = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        event = None
+
+    if result.returncode != 0 or not isinstance(event, dict) or event.get("is_error"):
+        detail = ""
+        if isinstance(event, dict) and event.get("result"):
+            detail = str(event["result"])
+        elif result.stderr.strip():
+            detail = result.stderr.strip().splitlines()[-1]
+        message = f"The claude CLI exited with code {result.returncode}."
+        if detail:
+            message = f"{message} {detail}"
+        raise LocalAgentError(message)
+
+    return {
+        "response": str(event.get("result") or ""),
+        "model": model,
+        "durationMs": event.get("duration_ms"),
+        "costUsd": event.get("total_cost_usd"),
+        "sessionId": event.get("session_id"),
+    }
 
 
 def _report_progress(progress: ProgressReporter | None, message: str) -> None:
@@ -74,6 +141,7 @@ class _LocalReviewSessionState:
     file_by_key: dict[LocalFileKey, AgentReviewFile]
     refresh_payload: RefreshPayload | None = None
     progress: ProgressReporter | None = None
+    agent_model: str = DEFAULT_AGENT_MODEL
     _file_response_cache_by_key: dict[LocalFileKey, bytes] = field(default_factory=dict)
     _lock: Lock = field(default_factory=Lock)
 
@@ -119,6 +187,13 @@ class _LocalReviewSessionState:
         _report_progress(self.progress, "Local review refresh is ready.")
         return session_id, payload_response
 
+    def run_agent(self, prompt: str) -> dict:
+        model = self.agent_model
+        _report_progress(self.progress, f"Running claude -p with model {model}.")
+        result = _run_claude_agent(prompt, model)
+        _report_progress(self.progress, "The agent reply is ready.")
+        return result
+
 
 class _LocalUiRequestHandler(SimpleHTTPRequestHandler):
     def __init__(
@@ -149,6 +224,8 @@ class _LocalUiRequestHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:
         if self._maybe_serve_refresh(send_body=True):
+            return
+        if self._maybe_serve_agent():
             return
         self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -260,6 +337,60 @@ class _LocalUiRequestHandler(SimpleHTTPRequestHandler):
             self.wfile.write(payload_response)
         return True
 
+    def _maybe_serve_agent(self) -> bool:
+        split = urlsplit(self.path)
+        if split.path != LOCAL_AGENT_ENDPOINT:
+            return False
+
+        session_id, _, _ = self._session_state.get_snapshot()
+        if not self._is_valid_session_request(
+            split.query,
+            session_id=session_id,
+            send_body=True,
+        ):
+            return True
+
+        content_length = int(self.headers.get("Content-Length") or 0)
+        if content_length <= 0 or content_length > AGENT_MAX_PROMPT_BYTES:
+            self._send_json_error(
+                HTTPStatus.BAD_REQUEST,
+                "A JSON body with a prompt is required.",
+                send_body=True,
+            )
+            return True
+
+        try:
+            body = json.loads(self.rfile.read(content_length).decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            body = None
+
+        prompt = body.get("prompt") if isinstance(body, dict) else None
+        if not isinstance(prompt, str) or not prompt.strip():
+            self._send_json_error(
+                HTTPStatus.BAD_REQUEST,
+                "A JSON body with a non-empty prompt string is required.",
+                send_body=True,
+            )
+            return True
+
+        try:
+            result = self._session_state.run_agent(prompt)
+        except LocalAgentError as exc:
+            self._send_json_error(HTTPStatus.BAD_GATEWAY, str(exc), send_body=True)
+            return True
+        except Exception as exc:
+            message = str(exc).strip() or "The agent run failed."
+            self._send_json_error(HTTPStatus.INTERNAL_SERVER_ERROR, message, send_body=True)
+            return True
+
+        response = json.dumps(result, separators=(",", ":")).encode("utf-8")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(response)))
+        self.end_headers()
+        self.wfile.write(response)
+        return True
+
     def _send_json_error(
         self,
         status: HTTPStatus,
@@ -314,6 +445,7 @@ def serve_local_review(
     *,
     progress: ProgressReporter | None = None,
     refresh_payload: RefreshPayload | None = None,
+    agent_model: str | None = None,
 ) -> None:
     _report_progress(progress, "Preparing local review UI assets.")
     archive_path = _find_packaged_site_archive()
@@ -328,6 +460,7 @@ def serve_local_review(
                 root_dir / "site",
                 progress=progress,
                 refresh_payload=refresh_payload,
+                agent_model=agent_model,
             )
         return
 
@@ -344,6 +477,7 @@ def serve_local_review(
         site_dir,
         progress=progress,
         refresh_payload=refresh_payload,
+        agent_model=agent_model,
     )
 
 
@@ -353,6 +487,7 @@ def _serve_static_site(
     *,
     progress: ProgressReporter | None = None,
     refresh_payload: RefreshPayload | None = None,
+    agent_model: str | None = None,
 ) -> None:
     if not site_dir.is_dir():
         raise LocalUiError(f"Unable to locate local UI files at {site_dir}.")
@@ -369,6 +504,7 @@ def _serve_static_site(
         file_by_key=file_by_key,
         refresh_payload=refresh_payload,
         progress=progress,
+        agent_model=(agent_model or "").strip() or get_default_agent_model(),
     )
 
     handler = partial(

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { ReviewLayout } from "@/components/ReviewLayout";
+import { type AgentReplyResult } from "@/lib/comments/agent";
 import { type AgentReviewPayload } from "@/lib/payload/types";
 import { asPayload } from "@/lib/payload/validate";
 
@@ -14,6 +15,7 @@ interface LocalReviewResponse {
 const LOCAL_PAYLOAD_ENDPOINT = "/__agentreview__/payload";
 const LOCAL_FILE_ENDPOINT = "/__agentreview__/file";
 const LOCAL_REFRESH_ENDPOINT = "/__agentreview__/refresh";
+const LOCAL_AGENT_ENDPOINT = "/__agentreview__/agent";
 const LOCAL_SESSION_QUERY_KEY = "agentreviewSession";
 
 interface LocalFileResponse {
@@ -150,6 +152,48 @@ export default function LocalReviewPage() {
     [sessionId]
   );
 
+  const runAgent = useCallback(
+    async (prompt: string): Promise<AgentReplyResult> => {
+      const response = await fetch(
+        buildLocalEndpointUrl(LOCAL_AGENT_ENDPOINT, sessionId),
+        {
+          cache: "no-store",
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt }),
+        }
+      );
+      const data = (await response.json()) as {
+        response?: unknown;
+        model?: unknown;
+        durationMs?: unknown;
+        costUsd?: unknown;
+        error?: unknown;
+      };
+
+      if (!response.ok) {
+        throw new Error(
+          typeof data.error === "string"
+            ? data.error
+            : "The agent request failed."
+        );
+      }
+
+      if (typeof data.response !== "string") {
+        throw new Error("The agent response was invalid.");
+      }
+
+      return {
+        response: data.response,
+        model: typeof data.model === "string" ? data.model : undefined,
+        durationMs:
+          typeof data.durationMs === "number" ? data.durationMs : undefined,
+        costUsd: typeof data.costUsd === "number" ? data.costUsd : undefined,
+      };
+    },
+    [sessionId]
+  );
+
   useEffect(() => {
     let cancelled = false;
 
@@ -214,6 +258,7 @@ export default function LocalReviewPage() {
       payload={payload}
       sessionId={sessionId}
       loadFileDetails={loadFileDetails}
+      runAgent={runAgent}
       onRefresh={refreshReview}
       isRefreshing={isRefreshing}
       refreshError={refreshError}

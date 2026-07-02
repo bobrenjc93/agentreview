@@ -640,6 +640,7 @@ export function DiffView({
   >({});
   const {
     addComment,
+    retryAgentReply,
     getCommentsForFile,
     updateComment,
     removeComment,
@@ -1207,7 +1208,7 @@ export function DiffView({
       lineContent: commentingRange.lineContent,
       lineContents: commentingRange.lineContents,
       body,
-    });
+    }, { diffContext: file.diff });
     setCommentingRange(null);
   }
 
@@ -1433,6 +1434,7 @@ export function DiffView({
             comment={comment}
             onEdit={updateComment}
             onDelete={removeComment}
+            onRetryAgent={retryAgentReply}
           />
         ))}
         {commentingRange?.endRowKey === rowKey && (

@@ -12,7 +12,7 @@ from .git.diff import get_diff
 from .git.files import get_file_contents
 from .git.metadata import get_metadata
 from .git.segments import get_review_segments
-from .local_ui import LocalUiError, serve_local_review
+from .local_ui import LocalUiError, get_default_agent_model, serve_local_review
 from .payload.encode import encode_payload, write_payload
 from .payload.types import AgentReviewPayload
 from .vcs import detect_repository, emit_verbose, verbose_activity
@@ -61,6 +61,8 @@ Notes:
   --staged is only available in Git repositories.
   --local serves the bundled web UI locally instead of printing a payload blob.
   Set BASE_URL to rewrite the printed/opened --local URL for proxied dev environments.
+  In --local mode, inline comments are answered by `claude -p`. Pick the model with
+  --model or AGENTREVIEW_MODEL (default: claude-opus-4-8).
   --uncommitted only affects --branch and --commit. Plain agentreview still reviews your working tree.
   COMMIT can be any git commit-ish or Sapling revision identifier.
 
@@ -222,6 +224,16 @@ def build_review_payload(
     help="Launch the local web UI instead of printing the encoded payload.",
 )
 @click.option(
+    "--model",
+    "agent_model",
+    default=None,
+    metavar="MODEL",
+    help=(
+        "Model passed to `claude --model` when answering inline comments in --local "
+        "mode (also settable via AGENTREVIEW_MODEL; default: claude-opus-4-8)."
+    ),
+)
+@click.option(
     "-v",
     "--verbose",
     is_flag=True,
@@ -251,6 +263,7 @@ def main(
     staged: bool,
     include_uncommitted: bool,
     local_mode: bool,
+    agent_model: str | None,
     verbose: bool,
     base_branch: str | None,
     base_commit: str | None,
@@ -297,11 +310,14 @@ def main(
         sys.exit(1)
 
     if local_mode:
+        resolved_agent_model = (agent_model or "").strip() or get_default_agent_model()
         report_local_progress("Starting the local review UI.")
+        report_local_progress(f"Inline comments will run claude -p with model {resolved_agent_model}.")
         emit_verbose(verbose, "launching local review UI")
         try:
             serve_local_review(
                 payload,
+                agent_model=resolved_agent_model,
                 progress=report_local_progress,
                 refresh_payload=lambda progress=None: build_review_payload(
                     diff_mode=diff_mode,

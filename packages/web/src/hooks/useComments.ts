@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useState, useCallback, useEffect } from "react";
+import { createContext, useContext, useState, useCallback, useEffect, useRef } from "react";
 import {
   commentEndsOnLine,
   commentIncludesLine,
@@ -11,12 +11,14 @@ import {
   isLineComment,
   normalizeReviewComment,
 } from "@/lib/comments/types";
+import { buildAgentPrompt, type RunAgent } from "@/lib/comments/agent";
 import { createClientId } from "@/lib/id";
 import { loadComments, saveComments, clearComments as clearStorage } from "@/lib/comments/storage";
 
 interface CommentsContextValue {
   comments: ReviewComment[];
-  addComment: (comment: NewReviewComment) => void;
+  addComment: (comment: NewReviewComment, options?: { diffContext?: string }) => void;
+  retryAgentReply: (id: string) => void;
   updateComment: (id: string, body: string) => void;
   removeComment: (id: string) => void;
   removeComments: (ids: string[]) => void;
@@ -36,12 +38,26 @@ interface CommentsContextValue {
 
 export const CommentsContext = createContext<CommentsContextValue | null>(null);
 
-export function useCommentsProvider(sessionId: string) {
+export function useCommentsProvider(sessionId: string, runAgent?: RunAgent) {
   const [comments, setComments] = useState<ReviewComment[]>([]);
   const [loadedSessionId, setLoadedSessionId] = useState<string | null>(null);
+  const agentPromptById = useRef(new Map<string, string>());
+  const runAgentRef = useRef<RunAgent | undefined>(runAgent);
+  runAgentRef.current = runAgent;
 
   useEffect(() => {
-    setComments(loadComments(sessionId));
+    // Agent runs from a previous page load can never resolve; surface them as errors.
+    setComments(
+      loadComments(sessionId).map((comment) =>
+        comment.agentStatus === "pending"
+          ? {
+              ...comment,
+              agentStatus: "error" as const,
+              agentError: "The agent run was interrupted before it finished.",
+            }
+          : comment
+      )
+    );
     setLoadedSessionId(sessionId);
   }, [sessionId]);
 
@@ -50,16 +66,89 @@ export function useCommentsProvider(sessionId: string) {
     saveComments(sessionId, comments);
   }, [sessionId, comments, loadedSessionId]);
 
+  const startAgentReply = useCallback((commentId: string, prompt: string) => {
+    const run = runAgentRef.current;
+    if (!run) return;
+
+    agentPromptById.current.set(commentId, prompt);
+    setComments((prev) =>
+      prev.map((comment) =>
+        comment.id === commentId
+          ? {
+              ...comment,
+              agentStatus: "pending",
+              agentReply: undefined,
+              agentError: undefined,
+            }
+          : comment
+      )
+    );
+
+    run(prompt).then(
+      (result) => {
+        setComments((prev) =>
+          prev.map((comment) =>
+            comment.id === commentId
+              ? {
+                  ...comment,
+                  agentStatus: "done",
+                  agentReply: result.response,
+                  agentError: undefined,
+                  agentModel: result.model,
+                  agentDurationMs: result.durationMs,
+                  agentCostUsd: result.costUsd,
+                }
+              : comment
+          )
+        );
+      },
+      (error: unknown) => {
+        setComments((prev) =>
+          prev.map((comment) =>
+            comment.id === commentId
+              ? {
+                  ...comment,
+                  agentStatus: "error",
+                  agentError:
+                    error instanceof Error
+                      ? error.message
+                      : "The agent run failed.",
+                }
+              : comment
+          )
+        );
+      }
+    );
+  }, []);
+
   const addComment = useCallback(
-    (comment: NewReviewComment) => {
+    (comment: NewReviewComment, options?: { diffContext?: string }) => {
       const newComment = normalizeReviewComment({
         ...comment,
         id: createClientId(),
         createdAt: new Date().toISOString(),
       });
       setComments((prev) => [...prev, newComment]);
+      if (runAgentRef.current) {
+        startAgentReply(
+          newComment.id,
+          buildAgentPrompt(newComment, options?.diffContext)
+        );
+      }
     },
-    []
+    [startAgentReply]
+  );
+
+  const retryAgentReply = useCallback(
+    (id: string) => {
+      const prompt = agentPromptById.current.get(id);
+      const comment = prompt ? null : comments.find((c) => c.id === id);
+      const nextPrompt = prompt ?? (comment ? buildAgentPrompt(comment) : null);
+      if (nextPrompt) {
+        startAgentReply(id, nextPrompt);
+      }
+    },
+    [comments, startAgentReply]
   );
 
   const updateComment = useCallback((id: string, body: string) => {
@@ -126,6 +215,7 @@ export function useCommentsProvider(sessionId: string) {
   return {
     comments,
     addComment,
+    retryAgentReply,
     updateComment,
     removeComment,
     removeComments,
