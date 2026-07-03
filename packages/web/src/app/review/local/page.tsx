@@ -20,6 +20,7 @@ const LOCAL_PAYLOAD_ENDPOINT = "/__agentreview__/payload";
 const LOCAL_FILE_ENDPOINT = "/__agentreview__/file";
 const LOCAL_REFRESH_ENDPOINT = "/__agentreview__/refresh";
 const LOCAL_AGENT_ENDPOINT = "/__agentreview__/agent";
+const LOCAL_AGENT_CANCEL_ENDPOINT = "/__agentreview__/agent/cancel";
 const LOCAL_SESSION_QUERY_KEY = "agentreviewSession";
 
 interface LocalFileResponse {
@@ -168,6 +169,7 @@ export default function LocalReviewPage() {
             prompt,
             resumeSessionId: options?.resumeSessionId,
             label: options?.label,
+            runKey: options?.runKey,
           }),
         }
       );
@@ -189,6 +191,7 @@ export default function LocalReviewPage() {
       let buffered = "";
       let result: AgentReplyResult | null = null;
       let streamError: string | null = null;
+      let wasCancelled = false;
 
       const handleLine = (line: string) => {
         if (!line.trim()) return;
@@ -206,6 +209,8 @@ export default function LocalReviewPage() {
 
         if (event.type === "segment" && isAgentReplySegment(event.segment)) {
           options?.onSegment?.(event.segment);
+        } else if (event.type === "cancelled") {
+          wasCancelled = true;
         } else if (event.type === "error") {
           streamError =
             typeof event.error === "string" ? event.error : "The agent run failed.";
@@ -251,6 +256,9 @@ export default function LocalReviewPage() {
       }
       handleLine(buffered);
 
+      if (wasCancelled) {
+        return { response: "", cancelled: true };
+      }
       if (streamError) {
         throw new Error(streamError);
       }
@@ -258,6 +266,28 @@ export default function LocalReviewPage() {
         throw new Error("The agent stream ended without a result.");
       }
       return result;
+    },
+    [sessionId]
+  );
+
+  const cancelAgent = useCallback(
+    async (runKey: string): Promise<boolean> => {
+      try {
+        const response = await fetch(
+          buildLocalEndpointUrl(LOCAL_AGENT_CANCEL_ENDPOINT, sessionId),
+          {
+            cache: "no-store",
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ runKey }),
+          }
+        );
+        if (!response.ok) return false;
+        const data = (await response.json()) as { cancelled?: unknown };
+        return data.cancelled === true;
+      } catch {
+        return false;
+      }
     },
     [sessionId]
   );
@@ -327,6 +357,7 @@ export default function LocalReviewPage() {
       sessionId={sessionId}
       loadFileDetails={loadFileDetails}
       runAgent={runAgent}
+      cancelAgent={cancelAgent}
       onRefresh={refreshReview}
       isRefreshing={isRefreshing}
       refreshError={refreshError}

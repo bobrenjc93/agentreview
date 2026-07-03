@@ -1,6 +1,6 @@
 export type ReviewCommentSide = "old" | "new";
 export type ReviewCommentKind = "line" | "segment";
-export type CommentAgentStatus = "pending" | "done" | "error";
+export type CommentAgentStatus = "pending" | "done" | "error" | "cancelled";
 
 export interface CommentAgentSegment {
   type: "text" | "tool";

@@ -97,6 +97,27 @@ function isCommentProvenanceRedundant(
   return false;
 }
 
+/** Plain-text form of one comment with its file, line range, and quoted lines. */
+export function formatSingleCommentForCopy(comment: ReviewComment): string {
+  const lines: string[] = [];
+
+  if (isSegmentComment(comment)) {
+    const scope = comment.commitHash
+      ? `Commit ${comment.commitHash}`
+      : comment.segmentLabel || "Segment";
+    lines.push(`${scope} — ${formatReviewCommentRange(comment)}`);
+  } else {
+    lines.push(`${comment.filePath ?? "Unknown file"} (${formatReviewCommentRange(comment)})`);
+    const contents = getCommentLineContents(comment);
+    if (contents.some((line) => line.length > 0)) {
+      lines.push(...contents.map((line) => `> ${line}`));
+    }
+  }
+
+  lines.push("", comment.body);
+  return lines.join("\n");
+}
+
 export function generateExportPrompt(
   payload: AgentReviewPayload,
   comments: ReviewComment[]

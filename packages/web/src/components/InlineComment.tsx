@@ -8,6 +8,8 @@ import {
   formatReviewCommentRange,
   getCommentAnchorId,
 } from "@/lib/comments/types";
+import { copyTextToClipboard } from "@/lib/clipboard";
+import { formatSingleCommentForCopy } from "@/lib/export/prompt";
 import { AgentReplyBody } from "./AgentMarkdown";
 import { InlineCommentForm } from "./InlineCommentForm";
 
@@ -17,6 +19,7 @@ interface InlineCommentProps {
   onDelete: (id: string) => void;
   onRetryAgent?: (id: string) => void;
   onAskAgentFollowUp?: (id: string, question: string) => void;
+  onCancelAgent?: (id: string) => void;
   onSetAgentExpanded?: (id: string, expanded: boolean) => void;
 }
 
@@ -127,6 +130,10 @@ function AgentReplyThread({
         <p className="mt-2 text-xs text-red-400">
           Agent reply failed: {exchange.error || "unknown error"}
         </p>
+      ) : exchange.status === "cancelled" ? (
+        <p className="mt-2 text-xs text-gray-500">
+          This run was cancelled before it finished.
+        </p>
       ) : (
         <div className="mt-2">
           <p className="mb-1 text-[11px] text-cyan-400/90">
@@ -218,11 +225,13 @@ function AgentReplySection({
   comment,
   onRetryAgent,
   onAskAgentFollowUp,
+  onCancelAgent,
   onSetAgentExpanded,
 }: {
   comment: ReviewComment;
   onRetryAgent?: (id: string) => void;
   onAskAgentFollowUp?: (id: string, question: string) => void;
+  onCancelAgent?: (id: string) => void;
   onSetAgentExpanded?: (id: string, expanded: boolean) => void;
 }) {
   if (!comment.agentStatus) return null;
@@ -237,58 +246,77 @@ function AgentReplySection({
   // The status row keeps one fixed-height line regardless of agent state, so
   // streaming output and completions never shift the page layout while folded.
   const statusRow = (
-    <button
-      type="button"
-      onClick={() => onSetAgentExpanded?.(comment.id, !isExpanded)}
-      className="flex h-6 w-full min-w-0 items-center gap-2 text-left"
-      title={isExpanded ? "Collapse the agent reply" : "Expand the agent reply"}
-    >
-      <span
-        className={`shrink-0 text-[10px] text-gray-500 transition-transform ${
-          isExpanded ? "rotate-90" : ""
-        }`}
+    <div className="flex h-6 w-full min-w-0 items-center gap-2">
+      <button
+        type="button"
+        onClick={() => onSetAgentExpanded?.(comment.id, !isExpanded)}
+        className="flex h-6 min-w-0 flex-1 items-center gap-2 text-left"
+        title={isExpanded ? "Collapse the agent reply" : "Expand the agent reply"}
       >
-        ▶
-      </span>
-      {isBusy ? (
-        <AgentPendingRow
-          startedAt={
-            comment.agentStatus === "pending"
-              ? comment.agentStartedAt
-              : exchanges.find((exchange) => exchange.status === "pending")
-                  ?.startedAt
-          }
-        />
-      ) : comment.agentStatus === "error" ? (
-        <>
-          <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-red-400" />
-          <span className="truncate text-xs text-red-400">
-            Agent reply failed{comment.agentError ? `: ${comment.agentError}` : ""}
-          </span>
-        </>
-      ) : (
-        <>
-          <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-cyan-400" />
-          <span className="truncate text-xs text-gray-400">
-            Agent replied
-            <span className="ml-1.5 text-cyan-400/90">
-              {formatAgentNote({
-                model: comment.agentModel,
-                durationMs: comment.agentDurationMs,
-                costUsd: comment.agentCostUsd,
-                startedAt: comment.agentStartedAt,
-                finishedAt: comment.agentFinishedAt,
-              })}
+        <span
+          className={`shrink-0 text-[10px] text-gray-500 transition-transform ${
+            isExpanded ? "rotate-90" : ""
+          }`}
+        >
+          ▶
+        </span>
+        {isBusy ? (
+          <AgentPendingRow
+            startedAt={
+              comment.agentStatus === "pending"
+                ? comment.agentStartedAt
+                : exchanges.find((exchange) => exchange.status === "pending")
+                    ?.startedAt
+            }
+          />
+        ) : comment.agentStatus === "error" ? (
+          <>
+            <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-red-400" />
+            <span className="truncate text-xs text-red-400">
+              Agent reply failed{comment.agentError ? `: ${comment.agentError}` : ""}
             </span>
-            {exchanges.length > 0 && (
-              <span className="ml-1.5 text-gray-500">
-                · {exchanges.length} repl{exchanges.length === 1 ? "y" : "ies"}
+          </>
+        ) : comment.agentStatus === "cancelled" ? (
+          <>
+            <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-gray-500" />
+            <span className="truncate text-xs text-gray-500">
+              Agent run cancelled
+            </span>
+          </>
+        ) : (
+          <>
+            <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-cyan-400" />
+            <span className="truncate text-xs text-gray-400">
+              Agent replied
+              <span className="ml-1.5 text-cyan-400/90">
+                {formatAgentNote({
+                  model: comment.agentModel,
+                  durationMs: comment.agentDurationMs,
+                  costUsd: comment.agentCostUsd,
+                  startedAt: comment.agentStartedAt,
+                  finishedAt: comment.agentFinishedAt,
+                })}
               </span>
-            )}
-          </span>
-        </>
+              {exchanges.length > 0 && (
+                <span className="ml-1.5 text-gray-500">
+                  · {exchanges.length} repl{exchanges.length === 1 ? "y" : "ies"}
+                </span>
+              )}
+            </span>
+          </>
+        )}
+      </button>
+      {isBusy && onCancelAgent && (
+        <button
+          type="button"
+          onClick={() => onCancelAgent(comment.id)}
+          className="shrink-0 text-xs text-gray-500 transition-colors hover:text-red-400"
+          title="Stop this agent run"
+        >
+          Cancel
+        </button>
       )}
-    </button>
+    </div>
   );
 
   return (
@@ -310,6 +338,26 @@ function AgentReplySection({
                   className="mt-1 text-xs text-blue-400 hover:text-blue-300 transition-colors"
                 >
                   Retry
+                </button>
+              )}
+            </div>
+          ) : comment.agentStatus === "cancelled" ? (
+            <div className="mt-1">
+              {comment.agentSegments && comment.agentSegments.length > 0 && (
+                <div className="mb-1">
+                  <AgentReplyBody segments={comment.agentSegments} />
+                </div>
+              )}
+              <p className="text-xs text-gray-500">
+                This run was cancelled before it finished.
+              </p>
+              {onRetryAgent && (
+                <button
+                  type="button"
+                  onClick={() => onRetryAgent(comment.id)}
+                  className="mt-1 text-xs text-blue-400 hover:text-blue-300 transition-colors"
+                >
+                  Run again
                 </button>
               )}
             </div>
@@ -341,9 +389,26 @@ export function InlineComment({
   onDelete,
   onRetryAgent,
   onAskAgentFollowUp,
+  onCancelAgent,
   onSetAgentExpanded,
 }: InlineCommentProps) {
   const [isEditing, setIsEditing] = useState(false);
+  const [isCopied, setIsCopied] = useState(false);
+
+  useEffect(() => {
+    if (!isCopied) return;
+    const timer = window.setTimeout(() => setIsCopied(false), 1500);
+    return () => window.clearTimeout(timer);
+  }, [isCopied]);
+
+  async function copyComment() {
+    try {
+      await copyTextToClipboard(formatSingleCommentForCopy(comment));
+      setIsCopied(true);
+    } catch {
+      // clipboard unavailable; leave the button state unchanged
+    }
+  }
 
   if (isEditing) {
     return (
@@ -377,10 +442,21 @@ export function InlineComment({
             comment={comment}
             onRetryAgent={onRetryAgent}
             onAskAgentFollowUp={onAskAgentFollowUp}
+            onCancelAgent={onCancelAgent}
             onSetAgentExpanded={onSetAgentExpanded}
           />
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void copyComment()}
+            className={`text-xs transition-colors ${
+              isCopied ? "text-cyan-300" : "text-gray-500 hover:text-cyan-300"
+            }`}
+            title="Copy this comment with its file and line numbers"
+          >
+            {isCopied ? "Copied" : "Copy"}
+          </button>
           <button
             type="button"
             onClick={() => setIsEditing(true)}

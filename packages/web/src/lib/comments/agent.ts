@@ -20,6 +20,8 @@ export interface AgentReplyResult {
   durationMs?: number;
   costUsd?: number;
   sessionId?: string;
+  /** True when the run was cancelled by the user rather than completing. */
+  cancelled?: boolean;
 }
 
 export function isAgentReplySegment(value: unknown): value is AgentReplySegment {
@@ -37,7 +39,11 @@ export interface RunAgentOptions {
   onSegment?: (segment: AgentReplySegment) => void;
   /** Short human-readable run description, shown in the CLI's progress logs. */
   label?: string;
+  /** Client-chosen token identifying this run so it can be cancelled. */
+  runKey?: string;
 }
+
+export type CancelAgent = (runKey: string) => Promise<boolean>;
 
 export function buildAgentRunLabel(
   comment: ReviewComment,

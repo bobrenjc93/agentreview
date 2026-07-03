@@ -32,6 +32,7 @@ LOCAL_PAYLOAD_ENDPOINT = "/__agentreview__/payload"
 LOCAL_FILE_ENDPOINT = "/__agentreview__/file"
 LOCAL_REFRESH_ENDPOINT = "/__agentreview__/refresh"
 LOCAL_AGENT_ENDPOINT = "/__agentreview__/agent"
+LOCAL_AGENT_CANCEL_ENDPOINT = "/__agentreview__/agent/cancel"
 LOCAL_SETTINGS_ENDPOINT = "/__agentreview__/settings"
 LOCAL_UI_ARCHIVE_NAME = "local_ui_assets.tar.gz"
 LOCAL_UI_BASE_URL_ENV = "BASE_URL"
@@ -274,6 +275,7 @@ def _stream_claude_agent(
     prompt: str,
     model: str,
     resume_session_id: str | None = None,
+    on_spawn: Callable[[subprocess.Popen], None] | None = None,
 ) -> "Iterator[dict]":
     """Yields {"type": "segment", ...} events as they arrive, then one {"type": "done", ...}."""
     claude = shutil.which("claude")
@@ -300,6 +302,8 @@ def _stream_claude_agent(
     command += shlex.split(os.environ.get(AGENT_EXTRA_ARGS_ENV, ""))
 
     proc = _spawn_agent(command, "claude")
+    if on_spawn is not None:
+        on_spawn(proc)
     deadline = monotonic() + AGENT_TIMEOUT_SECONDS
     segments: list[dict] = []
     result_event: dict | None = None
@@ -443,7 +447,11 @@ def _parse_codex_stream(stdout: str) -> tuple[list[dict], str | None, str | None
     return segments, last_message, thread_id, completed
 
 
-def _stream_codex_agent(prompt: str, model: str) -> "Iterator[dict]":
+def _stream_codex_agent(
+    prompt: str,
+    model: str,
+    on_spawn: Callable[[subprocess.Popen], None] | None = None,
+) -> "Iterator[dict]":
     """Yields {"type": "segment", ...} events as they arrive, then one {"type": "done", ...}."""
     codex = shutil.which("codex")
     if codex is None:
@@ -460,6 +468,8 @@ def _stream_codex_agent(prompt: str, model: str) -> "Iterator[dict]":
     command.append(prompt)
 
     proc = _spawn_agent(command, "codex")
+    if on_spawn is not None:
+        on_spawn(proc)
     deadline = monotonic() + AGENT_TIMEOUT_SECONDS
     segments: list[dict] = []
     last_message: str | None = None
@@ -563,6 +573,8 @@ class _LocalReviewSessionState:
     codex_model: str = DEFAULT_CODEX_MODEL
     _file_response_cache_by_key: dict[LocalFileKey, bytes] = field(default_factory=dict)
     _lock: Lock = field(default_factory=Lock)
+    _agent_procs_by_run_key: dict[str, subprocess.Popen] = field(default_factory=dict)
+    _cancelled_run_keys: set[str] = field(default_factory=set)
 
     def get_snapshot(self) -> tuple[str, bytes, dict[LocalFileKey, AgentReviewFile]]:
         with self._lock:
@@ -611,10 +623,20 @@ class _LocalReviewSessionState:
         prompt: str,
         resume_session_id: str | None = None,
         label: str | None = None,
+        run_key: str | None = None,
     ) -> Iterator[dict]:
         run_id = uuid4().hex[:6]
         run_tag = f"[agent {run_id}]" + (f" {label}" if label else "")
         started = monotonic()
+
+        def register_proc(proc: subprocess.Popen) -> None:
+            if run_key is None:
+                return
+            with self._lock:
+                # a cancel may have arrived before the process spawned
+                if run_key in self._cancelled_run_keys:
+                    proc.kill()
+                self._agent_procs_by_run_key[run_key] = proc
 
         backend, claude_model, codex_model = self.get_agent_config()
         if backend == "codex":
@@ -624,26 +646,59 @@ class _LocalReviewSessionState:
             )
             # codex exec resume is not wired up yet; replies fall back to a
             # fresh run with the conversation embedded in the prompt.
-            stream = _stream_codex_agent(prompt, codex_model)
+            stream = _stream_codex_agent(prompt, codex_model, register_proc)
         else:
             _report_progress(
                 self.progress,
                 f"{run_tag} Running claude -p with model {claude_model}.",
             )
-            stream = _stream_claude_agent(prompt, claude_model, resume_session_id)
+            stream = _stream_claude_agent(
+                prompt, claude_model, resume_session_id, register_proc
+            )
 
         try:
             yield from stream
         except Exception as exc:
+            if run_key is not None and self._consume_cancellation(run_key):
+                _report_progress(
+                    self.progress,
+                    f"{run_tag} The agent run was cancelled after {monotonic() - started:.1f}s.",
+                )
+                yield {"type": "cancelled"}
+                return
             _report_progress(
                 self.progress,
                 f"{run_tag} The agent run failed after {monotonic() - started:.1f}s: {exc}",
             )
             raise
+        finally:
+            if run_key is not None:
+                with self._lock:
+                    self._agent_procs_by_run_key.pop(run_key, None)
+                    self._cancelled_run_keys.discard(run_key)
         _report_progress(
             self.progress,
             f"{run_tag} The agent reply is ready ({monotonic() - started:.1f}s).",
         )
+
+    def cancel_agent(self, run_key: str) -> bool:
+        with self._lock:
+            self._cancelled_run_keys.add(run_key)
+            proc = self._agent_procs_by_run_key.get(run_key)
+        if proc is None:
+            return False
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        return True
+
+    def _consume_cancellation(self, run_key: str) -> bool:
+        with self._lock:
+            if run_key in self._cancelled_run_keys:
+                self._cancelled_run_keys.discard(run_key)
+                return True
+            return False
 
     def run_agent(self, prompt: str) -> dict:
         return _drain_agent_stream(self.stream_agent(prompt))
@@ -741,6 +796,8 @@ class _LocalUiRequestHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:
         if self._maybe_serve_refresh(send_body=True):
+            return
+        if self._maybe_serve_agent_cancel():
             return
         if self._maybe_serve_agent():
             return
@@ -902,6 +959,12 @@ class _LocalUiRequestHandler(SimpleHTTPRequestHandler):
         else:
             label = " ".join(label.split())[:120]
 
+        run_key = body.get("runKey") if isinstance(body, dict) else None
+        if not isinstance(run_key, str) or not run_key.strip():
+            run_key = None
+        else:
+            run_key = run_key.strip()[:80]
+
         # Stream NDJSON: segment events as the agent produces them, then a
         # final done (or error) line. Errors after streaming begins can no
         # longer change the HTTP status, so they ride in the last line.
@@ -914,7 +977,9 @@ class _LocalUiRequestHandler(SimpleHTTPRequestHandler):
             self.wfile.flush()
 
         try:
-            for event in self._session_state.stream_agent(prompt, resume_session_id, label):
+            for event in self._session_state.stream_agent(
+                prompt, resume_session_id, label, run_key
+            ):
                 write_line(event)
         except BrokenPipeError:
             pass
@@ -930,6 +995,32 @@ class _LocalUiRequestHandler(SimpleHTTPRequestHandler):
                 write_line({"type": "error", "error": error_message})
             except BrokenPipeError:
                 pass
+        return True
+
+    def _maybe_serve_agent_cancel(self) -> bool:
+        split = urlsplit(self.path)
+        if split.path != LOCAL_AGENT_CANCEL_ENDPOINT:
+            return False
+
+        content_length = int(self.headers.get("Content-Length") or 0)
+        body = None
+        if 0 < content_length <= SETTINGS_MAX_BODY_BYTES:
+            try:
+                body = json.loads(self.rfile.read(content_length).decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                body = None
+
+        run_key = body.get("runKey") if isinstance(body, dict) else None
+        if not isinstance(run_key, str) or not run_key.strip():
+            self._send_json_error(
+                HTTPStatus.BAD_REQUEST,
+                "A JSON body with a runKey string is required.",
+                send_body=True,
+            )
+            return True
+
+        cancelled = self._session_state.cancel_agent(run_key.strip()[:80])
+        self._send_json(HTTPStatus.OK, {"cancelled": cancelled})
         return True
 
     def _maybe_serve_settings(self, *, method: str) -> bool:

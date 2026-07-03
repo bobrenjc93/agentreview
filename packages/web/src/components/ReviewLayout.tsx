@@ -26,7 +26,7 @@ import {
   getCommentFileId,
   isSegmentComment,
 } from "@/lib/comments/types";
-import { type RunAgent } from "@/lib/comments/agent";
+import { type CancelAgent, type RunAgent } from "@/lib/comments/agent";
 import { AgentActivityBubble } from "./AgentActivityBubble";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { generateExportPrompt } from "@/lib/export/prompt";
@@ -47,6 +47,7 @@ interface ReviewLayoutProps {
     filePath: string
   ) => Promise<{ source?: string; oldSource?: string }>;
   runAgent?: RunAgent;
+  cancelAgent?: CancelAgent;
   onRefresh?: () => Promise<void>;
   isRefreshing?: boolean;
   refreshError?: string | null;
@@ -442,6 +443,7 @@ export function ReviewLayout({
   sessionId,
   loadFileDetails,
   runAgent,
+  cancelAgent,
   onRefresh,
   isRefreshing = false,
   refreshError = null,
@@ -523,7 +525,7 @@ export function ReviewLayout({
   const [addingSegmentCommentId, setAddingSegmentCommentId] = useState<string | null>(null);
   const [pendingSegmentId, setPendingSegmentId] = useState<string | null>(null);
   const [isSwitchingSegment, startSegmentTransition] = useTransition();
-  const commentsValue = useCommentsProvider(sessionId, runAgent);
+  const commentsValue = useCommentsProvider(sessionId, runAgent, cancelAgent);
   const commentsCount = commentsValue.comments.length;
   const exportCopyResetTimersRef = useRef<Map<string, number>>(new Map());
 
@@ -1867,6 +1869,7 @@ export function ReviewLayout({
                               onDelete={commentsValue.removeComment}
                               onRetryAgent={commentsValue.retryAgentReply}
                               onAskAgentFollowUp={commentsValue.askAgentFollowUp}
+                              onCancelAgent={commentsValue.cancelAgentReply}
                               onSetAgentExpanded={commentsValue.setAgentExpanded}
                             />
                           ))}

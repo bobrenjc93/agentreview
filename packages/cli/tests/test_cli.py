@@ -1499,7 +1499,8 @@ class LocalAgentTests(unittest.TestCase):
 
         result = session_state.run_agent("hello")
 
-        stream_codex_mock.assert_called_once_with("hello", "gpt-5.5-codex")
+        stream_codex_mock.assert_called_once()
+        self.assertEqual(stream_codex_mock.call_args.args[:2], ("hello", "gpt-5.5-codex"))
         stream_claude_mock.assert_not_called()
         self.assertEqual(result["response"], "from codex")
 
@@ -1663,6 +1664,43 @@ class LocalAgentTests(unittest.TestCase):
             if (match := re.match(r"\[agent ([0-9a-f]{6})\]", line))
         }
         self.assertEqual(len(run_ids), 2)
+
+    @patch("agentreview.local_ui._stream_claude_agent")
+    def test_cancelled_run_yields_cancelled_event(self, stream_mock) -> None:
+        session_state = _LocalReviewSessionState(
+            session_id="local-test",
+            payload_response=b"{}",
+            file_by_key={},
+        )
+
+        killed = []
+
+        class FakeProc:
+            def kill(self):
+                killed.append(True)
+
+        def fake_stream(prompt, model, resume, on_spawn):
+            on_spawn(FakeProc())
+            # simulate the user cancelling while the run is in flight
+            self.assertTrue(session_state.cancel_agent("run-1"))
+            raise LocalAgentError("The claude CLI exited with code -9.")
+            yield  # pragma: no cover — makes this a generator
+
+        stream_mock.side_effect = fake_stream
+
+        events = list(session_state.stream_agent("hello", None, None, "run-1"))
+
+        self.assertTrue(killed)
+        self.assertEqual(events, [{"type": "cancelled"}])
+
+    def test_cancel_agent_returns_false_for_unknown_run(self) -> None:
+        session_state = _LocalReviewSessionState(
+            session_id="local-test",
+            payload_response=b"{}",
+            file_by_key={},
+        )
+
+        self.assertFalse(session_state.cancel_agent("missing-run"))
 
     @patch("agentreview.local_ui.load_persisted_settings", return_value={})
     def test_default_codex_model_is_gpt_55(self, load_settings_mock) -> None:
@@ -1857,7 +1895,8 @@ class LocalAgentTests(unittest.TestCase):
 
         result = session_state.run_agent("hello")
 
-        stream_mock.assert_called_once_with("hello", "my-model", None)
+        stream_mock.assert_called_once()
+        self.assertEqual(stream_mock.call_args.args[:3], ("hello", "my-model", None))
         self.assertEqual(result["response"], "ok")
 
 

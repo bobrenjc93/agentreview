@@ -16,6 +16,7 @@ import {
   buildAgentPrompt,
   buildAgentRunLabel,
   buildFollowUpPrompt,
+  type CancelAgent,
   type RunAgent,
 } from "@/lib/comments/agent";
 import { createClientId } from "@/lib/id";
@@ -26,6 +27,7 @@ interface CommentsContextValue {
   addComment: (comment: NewReviewComment, options?: { diffContext?: string }) => void;
   retryAgentReply: (id: string) => void;
   askAgentFollowUp: (id: string, question: string) => void;
+  cancelAgentReply: (id: string) => void;
   markAgentSeen: (id: string) => void;
   setAgentExpanded: (id: string, expanded: boolean) => void;
   updateComment: (id: string, body: string) => void;
@@ -47,12 +49,19 @@ interface CommentsContextValue {
 
 export const CommentsContext = createContext<CommentsContextValue | null>(null);
 
-export function useCommentsProvider(sessionId: string, runAgent?: RunAgent) {
+export function useCommentsProvider(
+  sessionId: string,
+  runAgent?: RunAgent,
+  cancelAgent?: CancelAgent
+) {
   const [comments, setComments] = useState<ReviewComment[]>([]);
   const [loadedSessionId, setLoadedSessionId] = useState<string | null>(null);
   const agentPromptById = useRef(new Map<string, string>());
+  const agentRunKeyById = useRef(new Map<string, string>());
   const runAgentRef = useRef<RunAgent | undefined>(runAgent);
   runAgentRef.current = runAgent;
+  const cancelAgentRef = useRef<CancelAgent | undefined>(cancelAgent);
+  cancelAgentRef.current = cancelAgent;
   const commentsRef = useRef<ReviewComment[]>(comments);
   commentsRef.current = comments;
 
@@ -105,6 +114,8 @@ export function useCommentsProvider(sessionId: string, runAgent?: RunAgent) {
       if (!run) return;
 
       agentPromptById.current.set(commentId, prompt);
+      const runKey = createClientId();
+      agentRunKeyById.current.set(commentId, runKey);
       patchComment(commentId, (comment) => ({
         ...comment,
         agentStatus: "pending",
@@ -120,6 +131,7 @@ export function useCommentsProvider(sessionId: string, runAgent?: RunAgent) {
 
       run(prompt, {
         label,
+        runKey,
         onSegment: (segment) => {
           patchComment(commentId, (comment) => ({
             ...comment,
@@ -128,6 +140,14 @@ export function useCommentsProvider(sessionId: string, runAgent?: RunAgent) {
         },
       }).then(
         (result) => {
+          if (result.cancelled) {
+            patchComment(commentId, (comment) => ({
+              ...comment,
+              agentStatus: "cancelled",
+              agentFinishedAt: new Date().toISOString(),
+            }));
+            return;
+          }
           patchComment(commentId, (comment) => ({
             ...comment,
             agentStatus: "done",
@@ -155,6 +175,13 @@ export function useCommentsProvider(sessionId: string, runAgent?: RunAgent) {
     },
     [patchComment]
   );
+
+  const cancelAgentReply = useCallback((commentId: string) => {
+    const cancel = cancelAgentRef.current;
+    const runKey = agentRunKeyById.current.get(commentId);
+    if (!cancel || !runKey) return;
+    void cancel(runKey);
+  }, []);
 
   const askAgentFollowUp = useCallback(
     (commentId: string, question: string) => {
@@ -196,9 +223,13 @@ export function useCommentsProvider(sessionId: string, runAgent?: RunAgent) {
         ],
       }));
 
+      const runKey = createClientId();
+      agentRunKeyById.current.set(commentId, runKey);
+
       run(prompt, {
         resumeSessionId,
         label: buildAgentRunLabel(comment, "reply"),
+        runKey,
         onSegment: (segment: CommentAgentSegment) => {
           patchExchange((exchange) => ({
             ...exchange,
@@ -207,6 +238,14 @@ export function useCommentsProvider(sessionId: string, runAgent?: RunAgent) {
         },
       }).then(
         (result) => {
+          if (result.cancelled) {
+            patchExchange((exchange) => ({
+              ...exchange,
+              status: "cancelled" as const,
+              finishedAt: new Date().toISOString(),
+            }));
+            return;
+          }
           patchExchange((exchange) => ({
             ...exchange,
             status: "done" as const,
@@ -356,6 +395,7 @@ export function useCommentsProvider(sessionId: string, runAgent?: RunAgent) {
     addComment,
     retryAgentReply,
     askAgentFollowUp,
+    cancelAgentReply,
     markAgentSeen,
     setAgentExpanded,
     updateComment,
