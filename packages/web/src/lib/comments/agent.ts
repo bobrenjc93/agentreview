@@ -35,6 +35,18 @@ export interface RunAgentOptions {
   resumeSessionId?: string;
   /** Called with each segment as the agent produces it. */
   onSegment?: (segment: AgentReplySegment) => void;
+  /** Short human-readable run description, shown in the CLI's progress logs. */
+  label?: string;
+}
+
+export function buildAgentRunLabel(
+  comment: ReviewComment,
+  kind: "comment" | "reply" = "comment"
+): string {
+  const location = isSegmentComment(comment)
+    ? comment.segmentLabel || "segment"
+    : `${comment.filePath ?? "file"} (${formatReviewCommentRange(comment)})`;
+  return kind === "reply" ? `reply on ${location}` : location;
 }
 
 export type RunAgent = (

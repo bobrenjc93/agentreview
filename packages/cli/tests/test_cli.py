@@ -1619,6 +1619,51 @@ class LocalAgentTests(unittest.TestCase):
         with patch.dict("os.environ", {"AGENTREVIEW_AGENT": "codex"}):
             self.assertEqual(get_default_agent_backend(), "codex")
 
+    @patch("agentreview.local_ui._stream_claude_agent")
+    def test_stream_agent_logs_carry_a_run_id_and_label(self, stream_mock) -> None:
+        stream_mock.return_value = iter(
+            [{"type": "done", "result": {"response": "ok"}}]
+        )
+        progress_lines: list[str] = []
+        session_state = _LocalReviewSessionState(
+            session_id="local-test",
+            payload_response=b"{}",
+            file_by_key={},
+            progress=progress_lines.append,
+        )
+
+        list(session_state.stream_agent("hello", None, "app.py (Line 3)"))
+
+        self.assertEqual(len(progress_lines), 2)
+        run_tag_match = re.match(r"\[agent ([0-9a-f]{6})\] app\.py \(Line 3\) Running", progress_lines[0])
+        self.assertIsNotNone(run_tag_match)
+        run_id = run_tag_match.group(1)
+        self.assertIn(f"[agent {run_id}] app.py (Line 3) The agent reply is ready (", progress_lines[1])
+
+    @patch("agentreview.local_ui._stream_claude_agent")
+    def test_stream_agent_uses_distinct_run_ids_per_run(self, stream_mock) -> None:
+        stream_mock.side_effect = [
+            iter([{"type": "done", "result": {"response": "ok"}}]),
+            iter([{"type": "done", "result": {"response": "ok"}}]),
+        ]
+        progress_lines: list[str] = []
+        session_state = _LocalReviewSessionState(
+            session_id="local-test",
+            payload_response=b"{}",
+            file_by_key={},
+            progress=progress_lines.append,
+        )
+
+        list(session_state.stream_agent("one"))
+        list(session_state.stream_agent("two"))
+
+        run_ids = {
+            match.group(1)
+            for line in progress_lines
+            if (match := re.match(r"\[agent ([0-9a-f]{6})\]", line))
+        }
+        self.assertEqual(len(run_ids), 2)
+
     @patch("agentreview.local_ui.load_persisted_settings", return_value={})
     def test_default_codex_model_is_gpt_55(self, load_settings_mock) -> None:
         from agentreview.local_ui import DEFAULT_CODEX_MODEL, get_default_codex_model

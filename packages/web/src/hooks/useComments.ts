@@ -14,6 +14,7 @@ import {
 } from "@/lib/comments/types";
 import {
   buildAgentPrompt,
+  buildAgentRunLabel,
   buildFollowUpPrompt,
   type RunAgent,
 } from "@/lib/comments/agent";
@@ -98,7 +99,7 @@ export function useCommentsProvider(sessionId: string, runAgent?: RunAgent) {
   );
 
   const startAgentReply = useCallback(
-    (commentId: string, prompt: string) => {
+    (commentId: string, prompt: string, label?: string) => {
       const run = runAgentRef.current;
       if (!run) return;
 
@@ -117,6 +118,7 @@ export function useCommentsProvider(sessionId: string, runAgent?: RunAgent) {
       }));
 
       run(prompt, {
+        label,
         onSegment: (segment) => {
           patchComment(commentId, (comment) => ({
             ...comment,
@@ -195,6 +197,7 @@ export function useCommentsProvider(sessionId: string, runAgent?: RunAgent) {
 
       run(prompt, {
         resumeSessionId,
+        label: buildAgentRunLabel(comment, "reply"),
         onSegment: (segment: CommentAgentSegment) => {
           patchExchange((exchange) => ({
             ...exchange,
@@ -255,7 +258,8 @@ export function useCommentsProvider(sessionId: string, runAgent?: RunAgent) {
       if (runAgentRef.current) {
         startAgentReply(
           newComment.id,
-          buildAgentPrompt(newComment, options?.diffContext)
+          buildAgentPrompt(newComment, options?.diffContext),
+          buildAgentRunLabel(newComment)
         );
       }
     },
@@ -265,10 +269,14 @@ export function useCommentsProvider(sessionId: string, runAgent?: RunAgent) {
   const retryAgentReply = useCallback(
     (id: string) => {
       const prompt = agentPromptById.current.get(id);
-      const comment = prompt ? null : comments.find((c) => c.id === id);
+      const comment = comments.find((c) => c.id === id);
       const nextPrompt = prompt ?? (comment ? buildAgentPrompt(comment) : null);
       if (nextPrompt) {
-        startAgentReply(id, nextPrompt);
+        startAgentReply(
+          id,
+          nextPrompt,
+          comment ? buildAgentRunLabel(comment) : undefined
+        );
       }
     },
     [comments, startAgentReply]

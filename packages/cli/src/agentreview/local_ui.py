@@ -598,21 +598,40 @@ class _LocalReviewSessionState:
         self,
         prompt: str,
         resume_session_id: str | None = None,
+        label: str | None = None,
     ) -> Iterator[dict]:
+        run_id = uuid4().hex[:6]
+        run_tag = f"[agent {run_id}]" + (f" {label}" if label else "")
+        started = monotonic()
+
         backend, claude_model, codex_model = self.get_agent_config()
         if backend == "codex":
             _report_progress(
                 self.progress,
-                f"Running codex exec with model {codex_model or 'codex default'}.",
+                f"{run_tag} Running codex exec with model {codex_model or 'codex default'}.",
             )
             # codex exec resume is not wired up yet; replies fall back to a
             # fresh run with the conversation embedded in the prompt.
             stream = _stream_codex_agent(prompt, codex_model)
         else:
-            _report_progress(self.progress, f"Running claude -p with model {claude_model}.")
+            _report_progress(
+                self.progress,
+                f"{run_tag} Running claude -p with model {claude_model}.",
+            )
             stream = _stream_claude_agent(prompt, claude_model, resume_session_id)
-        yield from stream
-        _report_progress(self.progress, "The agent reply is ready.")
+
+        try:
+            yield from stream
+        except Exception as exc:
+            _report_progress(
+                self.progress,
+                f"{run_tag} The agent run failed after {monotonic() - started:.1f}s: {exc}",
+            )
+            raise
+        _report_progress(
+            self.progress,
+            f"{run_tag} The agent reply is ready ({monotonic() - started:.1f}s).",
+        )
 
     def run_agent(self, prompt: str) -> dict:
         return _drain_agent_stream(self.stream_agent(prompt))
@@ -865,6 +884,12 @@ class _LocalUiRequestHandler(SimpleHTTPRequestHandler):
         if not isinstance(resume_session_id, str) or not resume_session_id.strip():
             resume_session_id = None
 
+        label = body.get("label") if isinstance(body, dict) else None
+        if not isinstance(label, str) or not label.strip():
+            label = None
+        else:
+            label = " ".join(label.split())[:120]
+
         # Stream NDJSON: segment events as the agent produces them, then a
         # final done (or error) line. Errors after streaming begins can no
         # longer change the HTTP status, so they ride in the last line.
@@ -877,7 +902,7 @@ class _LocalUiRequestHandler(SimpleHTTPRequestHandler):
             self.wfile.flush()
 
         try:
-            for event in self._session_state.stream_agent(prompt, resume_session_id):
+            for event in self._session_state.stream_agent(prompt, resume_session_id, label):
                 write_line(event)
         except BrokenPipeError:
             pass

@@ -167,6 +167,7 @@ export default function LocalReviewPage() {
           body: JSON.stringify({
             prompt,
             resumeSessionId: options?.resumeSessionId,
+            label: options?.label,
           }),
         }
       );
