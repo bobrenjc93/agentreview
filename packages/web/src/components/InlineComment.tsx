@@ -430,22 +430,10 @@ export function InlineComment({
       id={getCommentAnchorId(comment.id)}
       className="bg-gray-800 border border-gray-700 rounded-md p-3 mx-2 my-1 scroll-mt-24"
     >
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          <p className="text-[11px] text-gray-500 mb-1">
-            {formatReviewCommentRange(comment)}
-          </p>
-          <p className="text-sm text-gray-200 whitespace-pre-wrap">
-            {comment.body}
-          </p>
-          <AgentReplySection
-            comment={comment}
-            onRetryAgent={onRetryAgent}
-            onAskAgentFollowUp={onAskAgentFollowUp}
-            onCancelAgent={onCancelAgent}
-            onSetAgentExpanded={onSetAgentExpanded}
-          />
-        </div>
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <p className="min-w-0 truncate text-[11px] text-gray-500">
+          {formatReviewCommentRange(comment)}
+        </p>
         <div className="flex shrink-0 items-center gap-2">
           <button
             type="button"
@@ -475,6 +463,16 @@ export function InlineComment({
           </button>
         </div>
       </div>
+      <p className="text-sm text-gray-200 whitespace-pre-wrap">
+        {comment.body}
+      </p>
+      <AgentReplySection
+        comment={comment}
+        onRetryAgent={onRetryAgent}
+        onAskAgentFollowUp={onAskAgentFollowUp}
+        onCancelAgent={onCancelAgent}
+        onSetAgentExpanded={onSetAgentExpanded}
+      />
     </div>
   );
 }
