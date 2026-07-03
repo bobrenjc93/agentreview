@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   type CommentAgentExchange,
   type CommentAgentSegment,
@@ -17,6 +17,59 @@ interface InlineCommentProps {
   onDelete: (id: string) => void;
   onRetryAgent?: (id: string) => void;
   onAskAgentFollowUp?: (id: string, question: string) => void;
+}
+
+function findScrollParent(element: HTMLElement): HTMLElement | null {
+  let parent = element.parentElement;
+  while (parent) {
+    const overflowY = window.getComputedStyle(parent).overflowY;
+    if (
+      (overflowY === "auto" || overflowY === "scroll") &&
+      parent.scrollHeight > parent.clientHeight
+    ) {
+      return parent;
+    }
+    parent = parent.parentElement;
+  }
+  return (document.scrollingElement as HTMLElement | null) ?? null;
+}
+
+/**
+ * Agent replies stream into comments and change their height. When that
+ * happens above the user's viewport it would push their content down;
+ * compensate by shifting the scroll container by the same delta before
+ * paint so the visible content never moves.
+ */
+function useScrollAnchorCompensation(ref: React.RefObject<HTMLDivElement>) {
+  useEffect(() => {
+    const element = ref.current;
+    if (!element || typeof ResizeObserver === "undefined") return;
+
+    const scroller = findScrollParent(element);
+    if (!scroller) return;
+
+    let lastHeight = element.offsetHeight;
+    const observer = new ResizeObserver(() => {
+      const nextHeight = element.offsetHeight;
+      const delta = nextHeight - lastHeight;
+      lastHeight = nextHeight;
+      if (delta === 0) return;
+
+      const elementRect = element.getBoundingClientRect();
+      const viewportTop =
+        scroller === document.scrollingElement
+          ? 0
+          : scroller.getBoundingClientRect().top;
+      // compare against the element's pre-resize bottom edge: only
+      // compensate when the comment was entirely above the viewport
+      if (elementRect.bottom - delta <= viewportTop + 1) {
+        scroller.scrollTop += delta;
+      }
+    });
+
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [ref]);
 }
 
 function formatAgentNote(parts: {
@@ -282,6 +335,8 @@ export function InlineComment({
   onAskAgentFollowUp,
 }: InlineCommentProps) {
   const [isEditing, setIsEditing] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  useScrollAnchorCompensation(rootRef);
 
   if (isEditing) {
     return (
@@ -300,6 +355,7 @@ export function InlineComment({
 
   return (
     <div
+      ref={rootRef}
       id={getCommentAnchorId(comment.id)}
       className="bg-gray-800 border border-gray-700 rounded-md p-3 mx-2 my-1 scroll-mt-24"
     >
