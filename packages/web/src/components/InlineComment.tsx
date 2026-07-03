@@ -91,31 +91,21 @@ function AgentPendingRow({ startedAt }: { startedAt?: string }) {
   );
 }
 
-function AgentPendingBody({
-  startedAt,
-  segments,
-}: {
-  startedAt?: string;
-  segments?: CommentAgentSegment[];
-}) {
-  const elapsedSeconds = useElapsedSeconds(startedAt);
+/**
+ * Expanded view of an in-flight run: just the streamed segments so far. The
+ * spinner and elapsed time live in the collapsed status row above, so they
+ * are not repeated here.
+ */
+function AgentPendingBody({ segments }: { segments?: CommentAgentSegment[] }) {
+  if (!segments || segments.length === 0) {
+    return (
+      <p className="mt-2 text-xs text-gray-500">Waiting for the agent's first output…</p>
+    );
+  }
 
   return (
     <div className="mt-2">
-      {segments && segments.length > 0 && (
-        <div className="mb-2">
-          <AgentReplyBody segments={segments} />
-        </div>
-      )}
-      <div className="flex items-center gap-2">
-        <span className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-cyan-400/30 border-t-cyan-400" />
-        <p className="text-xs text-gray-400">
-          Agent is thinking…
-          <span className="ml-1.5 font-mono tabular-nums text-cyan-400/90">
-            {formatElapsedSeconds(elapsedSeconds)}
-          </span>
-        </p>
-      </div>
+      <AgentReplyBody segments={segments} />
     </div>
   );
 }
@@ -132,10 +122,7 @@ function AgentReplyThread({
       </p>
       <p className="text-sm text-gray-200 whitespace-pre-wrap">{exchange.question}</p>
       {exchange.status === "pending" ? (
-        <AgentPendingBody
-          startedAt={exchange.startedAt}
-          segments={exchange.segments}
-        />
+        <AgentPendingBody segments={exchange.segments} />
       ) : exchange.status === "error" ? (
         <p className="mt-2 text-xs text-red-400">
           Agent reply failed: {exchange.error || "unknown error"}
@@ -310,10 +297,7 @@ function AgentReplySection({
       {isExpanded && (
         <div className="mt-1 pl-5">
           {comment.agentStatus === "pending" ? (
-            <AgentPendingBody
-              startedAt={comment.agentStartedAt}
-              segments={comment.agentSegments}
-            />
+            <AgentPendingBody segments={comment.agentSegments} />
           ) : comment.agentStatus === "error" ? (
             <div className="mt-1">
               <p className="text-xs text-red-400">
