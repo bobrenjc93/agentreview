@@ -69,12 +69,22 @@ function truncateAgentContext(context: string): string {
   return `${context.slice(0, MAX_AGENT_CONTEXT_CHARS)}\n… (diff truncated)`;
 }
 
+const AGENT_ACTION_INSTRUCTIONS =
+  "You are running inside the repository being reviewed, with full permission to read and edit files.\n" +
+  "- If the comment asks for a change (rewrite, simplify, rename, fix, remove, add, refactor, ...), " +
+  "MAKE THE EDIT NOW with your file-editing tools, then reply summarizing what you changed. " +
+  "Never answer with what you *would* do or promise future work — 'I'll simplify this' without an " +
+  "edit is a failed task. Your reply must describe edits you already made.\n" +
+  "- If the comment is purely a question, answer it directly.\n" +
+  "- If you genuinely cannot make the change, say so explicitly and explain why.\n" +
+  "Keep the reply short and to the point.";
+
 export function buildAgentPrompt(
   comment: ReviewComment,
   diffContext?: string
 ): string {
   const sections: string[] = [
-    "You are assisting with a code review. A reviewer left a comment and expects a direct, concise reply.",
+    "You are acting on a code review comment inside the repository it refers to.",
   ];
 
   if (isSegmentComment(comment)) {
@@ -99,13 +109,7 @@ export function buildAgentPrompt(
     );
   }
 
-  sections.push(
-    `Reviewer comment:\n${comment.body}`,
-    "You are running inside the repository being reviewed, so you may read files for additional context " +
-      "and edit files when the reviewer asks for a change. Reply to the reviewer's comment directly. " +
-      "If they ask a question, answer it; if they point out a problem, assess it and fix it or suggest a fix. " +
-      "Keep the reply short and to the point."
-  );
+  sections.push(`Reviewer comment:\n${comment.body}`, AGENT_ACTION_INSTRUCTIONS);
 
   return sections.join("\n\n");
 }
@@ -121,7 +125,11 @@ export function buildFollowUpPrompt(
   options: { canResume: boolean; diffContext?: string }
 ): string {
   if (options.canResume) {
-    return `The reviewer replied to your last answer:\n\n${question}\n\nRespond directly and concisely.`;
+    return (
+      `The reviewer replied to your last answer:\n\n${question}\n\n` +
+      "If this asks for a change, make the edit now with your file-editing tools and reply " +
+      "summarizing what you changed — do not merely promise to do it. Otherwise answer directly and concisely."
+    );
   }
 
   const sections: string[] = [buildAgentPrompt(comment, options.diffContext)];
@@ -137,10 +145,7 @@ export function buildFollowUpPrompt(
     }
   }
 
-  sections.push(
-    `The reviewer now replies:\n${question}`,
-    "Respond directly and concisely to this latest reply."
-  );
+  sections.push(`The reviewer now replies:\n${question}`, AGENT_ACTION_INSTRUCTIONS);
 
   return sections.join("\n\n");
 }
