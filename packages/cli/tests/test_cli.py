@@ -1438,7 +1438,7 @@ class LocalAgentTests(unittest.TestCase):
                 self.assertEqual(settings["agent"], "claude")
                 self.assertEqual(
                     session_state.get_agent_config(),
-                    ("claude", "claude-fable-5", ""),
+                    ("claude", "claude-fable-5", "gpt-5.5"),
                 )
                 self.assertEqual(
                     load_persisted_settings().get("model"), "claude-fable-5"
@@ -1457,19 +1457,19 @@ class LocalAgentTests(unittest.TestCase):
                     {
                         "agent": "codex",
                         "model": "claude-opus-4-8",
-                        "codexModel": "gpt-5.1-codex",
+                        "codexModel": "gpt-5.5-codex",
                     }
                 )
 
                 self.assertEqual(settings["agent"], "codex")
-                self.assertEqual(settings["codexModel"], "gpt-5.1-codex")
+                self.assertEqual(settings["codexModel"], "gpt-5.5-codex")
                 self.assertEqual(
                     session_state.get_agent_config(),
-                    ("codex", "claude-opus-4-8", "gpt-5.1-codex"),
+                    ("codex", "claude-opus-4-8", "gpt-5.5-codex"),
                 )
                 persisted = load_persisted_settings()
                 self.assertEqual(persisted.get("agent"), "codex")
-                self.assertEqual(persisted.get("codexModel"), "gpt-5.1-codex")
+                self.assertEqual(persisted.get("codexModel"), "gpt-5.5-codex")
 
     def test_session_state_update_settings_rejects_unknown_agent(self) -> None:
         session_state = _LocalReviewSessionState(
@@ -1494,12 +1494,12 @@ class LocalAgentTests(unittest.TestCase):
             payload_response=b"{}",
             file_by_key={},
             agent_backend="codex",
-            codex_model="gpt-5.1-codex",
+            codex_model="gpt-5.5-codex",
         )
 
         result = session_state.run_agent("hello")
 
-        stream_codex_mock.assert_called_once_with("hello", "gpt-5.1-codex")
+        stream_codex_mock.assert_called_once_with("hello", "gpt-5.5-codex")
         stream_claude_mock.assert_not_called()
         self.assertEqual(result["response"], "from codex")
 
@@ -1592,14 +1592,14 @@ class LocalAgentTests(unittest.TestCase):
         )
         popen_mock.return_value = _FakeAgentProcess(stream + "\n")
 
-        result = _run_codex_agent("is this ok?", "gpt-5.1-codex")
+        result = _run_codex_agent("is this ok?", "gpt-5.5-codex")
 
         command = popen_mock.call_args.args[0]
         self.assertEqual(command[1:3], ["exec", "--json"])
-        self.assertEqual(command[command.index("--model") + 1], "gpt-5.1-codex")
+        self.assertEqual(command[command.index("--model") + 1], "gpt-5.5-codex")
         self.assertEqual(command[-1], "is this ok?")
         self.assertEqual(result["response"], "Looks fine.")
-        self.assertEqual(result["model"], "gpt-5.1-codex")
+        self.assertEqual(result["model"], "gpt-5.5-codex")
         self.assertEqual(result["sessionId"], "thread-1")
 
     @patch("agentreview.local_ui.shutil.which", return_value=None)
@@ -1618,6 +1618,22 @@ class LocalAgentTests(unittest.TestCase):
     def test_default_agent_backend_env_override(self) -> None:
         with patch.dict("os.environ", {"AGENTREVIEW_AGENT": "codex"}):
             self.assertEqual(get_default_agent_backend(), "codex")
+
+    @patch("agentreview.local_ui.load_persisted_settings", return_value={})
+    def test_default_codex_model_is_gpt_55(self, load_settings_mock) -> None:
+        from agentreview.local_ui import DEFAULT_CODEX_MODEL, get_default_codex_model
+
+        self.assertEqual(DEFAULT_CODEX_MODEL, "gpt-5.5")
+        self.assertEqual(get_default_codex_model(), "gpt-5.5")
+
+    @patch(
+        "agentreview.local_ui.load_persisted_settings",
+        return_value={"codexModel": "gpt-5.5-codex-mini"},
+    )
+    def test_default_codex_model_reads_persisted_settings(self, load_settings_mock) -> None:
+        from agentreview.local_ui import get_default_codex_model
+
+        self.assertEqual(get_default_codex_model(), "gpt-5.5-codex-mini")
 
     def test_session_state_update_settings_rejects_empty_model(self) -> None:
         session_state = _LocalReviewSessionState(

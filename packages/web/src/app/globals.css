@@ -599,6 +599,12 @@ html[data-theme="light"] .text-cyan-200 {
   color: #0e7490;
 }
 
+html[data-theme="light"] .text-cyan-300,
+html[data-theme="light"] .text-cyan-300\/90,
+html[data-theme="light"] .text-cyan-400\/90 {
+  color: #0e7490;
+}
+
 html[data-theme="light"] .text-emerald-100,
 html[data-theme="light"] .text-emerald-50 {
   color: #065f46;

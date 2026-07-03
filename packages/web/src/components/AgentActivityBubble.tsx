@@ -83,7 +83,7 @@ export function AgentActivityBubble({
                     className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${
                       comment.agentStatus === "error"
                         ? "bg-red-400"
-                        : "bg-emerald-400"
+                        : "bg-cyan-400"
                     }`}
                   />
                   <button
@@ -143,7 +143,7 @@ export function AgentActivityBubble({
           <span className="flex items-center gap-1.5">
             <span
               className={`h-2.5 w-2.5 rounded-full ${
-                unseenErrorCount > 0 ? "bg-red-400" : "bg-emerald-400"
+                unseenErrorCount > 0 ? "bg-red-400" : "bg-cyan-400"
               } ${isOpen ? "" : "animate-pulse"}`}
             />
             <span className="text-xs font-medium text-gray-300">

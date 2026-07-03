@@ -1506,7 +1506,7 @@ export function ReviewLayout({
                 }}
                 className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-all duration-200 ${
                   fullDiffCopied
-                    ? "bg-emerald-500/15 text-emerald-100 shadow-[0_0_0_1px_rgba(52,211,153,0.35)]"
+                    ? "bg-cyan-500/15 text-cyan-100 shadow-[0_0_0_1px_rgba(34,211,238,0.35)]"
                     : "bg-gray-700 text-white hover:bg-gray-600"
                 }`}
                 title="Copy the full review diff to the clipboard"
@@ -1521,7 +1521,7 @@ export function ReviewLayout({
                 disabled={commentsCount === 0}
                 className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-all duration-200 ${
                   allCommentsCopied
-                    ? "bg-emerald-500/15 text-emerald-100 shadow-[0_0_0_1px_rgba(52,211,153,0.35)]"
+                    ? "bg-cyan-500/15 text-cyan-100 shadow-[0_0_0_1px_rgba(34,211,238,0.35)]"
                     : "bg-blue-600 text-white hover:bg-blue-700"
                 } disabled:bg-gray-700 disabled:text-gray-500`}
                 title={
@@ -2187,7 +2187,7 @@ export function ReviewLayout({
               disabled={contextMenuCommentCount === 0}
               className={`block w-full rounded-md px-3 py-2 text-left text-sm transition-colors disabled:cursor-not-allowed disabled:text-gray-600 ${
                 contextMenuCommentsCopied
-                  ? "bg-emerald-500/10 text-emerald-100 hover:bg-emerald-500/15"
+                  ? "bg-cyan-500/10 text-cyan-100 hover:bg-cyan-500/15"
                   : "text-gray-300 hover:bg-gray-800 hover:text-white"
               }`}
             >

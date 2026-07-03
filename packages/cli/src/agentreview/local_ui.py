@@ -78,11 +78,12 @@ KNOWN_AGENT_MODELS = [
     "fable",
 ]
 # Curated codex model ids; empty string means codex's own default model.
+DEFAULT_CODEX_MODEL = "gpt-5.5"
 KNOWN_CODEX_MODELS = [
+    "gpt-5.5",
+    "gpt-5.5-codex",
+    "gpt-5.5-codex-mini",
     "gpt-5.1-codex-max",
-    "gpt-5.1-codex",
-    "gpt-5.1-codex-mini",
-    "gpt-5.1",
 ]
 LOCAL_FALLBACK_SEGMENT_ID = "all-changes"
 LOCAL_CACHE_BUSTER_QUERY_KEY = "agentreviewSession"
@@ -144,9 +145,9 @@ def get_default_agent_backend() -> str:
 
 def get_default_codex_model() -> str:
     saved_model = load_persisted_settings().get("codexModel")
-    if isinstance(saved_model, str):
+    if isinstance(saved_model, str) and saved_model.strip():
         return saved_model.strip()
-    return ""
+    return DEFAULT_CODEX_MODEL
 
 
 def _truncate_tool_detail(detail: str) -> str:
@@ -547,7 +548,7 @@ class _LocalReviewSessionState:
     progress: ProgressReporter | None = None
     agent_backend: str = DEFAULT_AGENT_BACKEND
     agent_model: str = DEFAULT_AGENT_MODEL
-    codex_model: str = ""
+    codex_model: str = DEFAULT_CODEX_MODEL
     _file_response_cache_by_key: dict[LocalFileKey, bytes] = field(default_factory=dict)
     _lock: Lock = field(default_factory=Lock)
 
@@ -628,6 +629,7 @@ class _LocalReviewSessionState:
             "codexModel": codex_model,
             "defaultAgent": DEFAULT_AGENT_BACKEND,
             "defaultModel": DEFAULT_AGENT_MODEL,
+            "defaultCodexModel": DEFAULT_CODEX_MODEL,
             "knownAgents": list(KNOWN_AGENT_BACKENDS),
             "knownModels": KNOWN_AGENT_MODELS,
             "knownCodexModels": KNOWN_CODEX_MODELS,
@@ -652,7 +654,7 @@ class _LocalReviewSessionState:
 
         normalized_model = model.strip()
         normalized_backend = backend.strip().lower()
-        normalized_codex_model = codex_model.strip()
+        normalized_codex_model = codex_model.strip() or DEFAULT_CODEX_MODEL
         with self._lock:
             self.agent_backend = normalized_backend
             self.agent_model = normalized_model
@@ -668,9 +670,7 @@ class _LocalReviewSessionState:
             raise LocalUiError(f"Failed to persist settings: {exc}") from exc
 
         active_model = (
-            normalized_codex_model or "codex default"
-            if normalized_backend == "codex"
-            else normalized_model
+            normalized_codex_model if normalized_backend == "codex" else normalized_model
         )
         _report_progress(
             self.progress,

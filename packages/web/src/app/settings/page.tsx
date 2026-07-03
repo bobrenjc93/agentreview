@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import {
   DEFAULT_AGENT_BACKEND,
   DEFAULT_AGENT_MODEL,
+  DEFAULT_CODEX_MODEL,
   KNOWN_AGENT_MODELS,
   KNOWN_CODEX_MODELS,
   fetchRemoteSettings,
@@ -272,7 +273,7 @@ export default function SettingsPage() {
                       setCodexModel(event.target.value);
                       markDirty();
                     }}
-                    placeholder="codex default"
+                    placeholder={DEFAULT_CODEX_MODEL}
                     className="mt-2 w-full rounded-lg border border-gray-700 bg-gray-900/70 px-3 py-2 font-mono text-sm text-gray-200 focus:border-blue-500 focus:outline-none"
                   />
                   <datalist id="codex-model-options">
@@ -290,7 +291,7 @@ export default function SettingsPage() {
                   />
                   <p className="mt-3 text-xs leading-5 text-gray-500">
                     Passed to <span className="font-mono">codex exec --model</span>.
-                    Leave empty to use codex&apos;s own default model.
+                    The default is <span className="font-mono">{DEFAULT_CODEX_MODEL}</span>.
                   </p>
                 </div>
               )}
@@ -310,7 +311,7 @@ export default function SettingsPage() {
                   {saveState === "saving" ? "Saving…" : "Save"}
                 </button>
                 {saveState === "saved" && (
-                  <span className="text-sm text-emerald-400">Saved.</span>
+                  <span className="text-sm text-cyan-300">Saved.</span>
                 )}
                 {saveState === "error" && saveError && (
                   <span className="text-sm text-red-400">{saveError}</span>

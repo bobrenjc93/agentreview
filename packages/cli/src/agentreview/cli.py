@@ -323,7 +323,7 @@ def main(
         report_local_progress("Starting the local review UI.")
         resolved_backend = get_default_agent_backend()
         if resolved_backend == "codex":
-            codex_model = get_default_codex_model() or "codex default"
+            codex_model = get_default_codex_model()
             report_local_progress(f"Inline comments will run codex exec with model {codex_model}.")
         else:
             report_local_progress(f"Inline comments will run claude -p with model {resolved_agent_model}.")

@@ -20,12 +20,13 @@ export const KNOWN_AGENT_MODELS = [
   "fable",
 ];
 
-// Mirrors KNOWN_CODEX_MODELS in the CLI; empty string = codex's own default.
+// Mirrors KNOWN_CODEX_MODELS in the CLI.
+export const DEFAULT_CODEX_MODEL = "gpt-5.5";
 export const KNOWN_CODEX_MODELS = [
+  "gpt-5.5",
+  "gpt-5.5-codex",
+  "gpt-5.5-codex-mini",
   "gpt-5.1-codex-max",
-  "gpt-5.1-codex",
-  "gpt-5.1-codex-mini",
-  "gpt-5.1",
 ];
 
 export interface AgentReviewSettings {
