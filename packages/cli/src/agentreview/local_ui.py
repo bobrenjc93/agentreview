@@ -282,7 +282,17 @@ def _stream_claude_agent(
             "The claude CLI was not found on PATH. Install Claude Code to use inline agent replies."
         )
 
-    command = [claude, "-p", prompt, "--output-format", "stream-json", "--verbose"]
+    # --dangerously-skip-permissions lets the agent edit files without an
+    # interactive approval prompt (there is no one attached to approve it)
+    command = [
+        claude,
+        "-p",
+        prompt,
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--dangerously-skip-permissions",
+    ]
     if resume_session_id:
         command += ["--resume", resume_session_id]
     if model:
@@ -441,7 +451,9 @@ def _stream_codex_agent(prompt: str, model: str) -> "Iterator[dict]":
             "The codex CLI was not found on PATH. Install Codex or switch the agent back to claude in Settings."
         )
 
-    command = [codex, "exec", "--json"]
+    # --yolo is codex's equivalent of skipping the approval sandbox so the
+    # agent can edit files during a headless run
+    command = [codex, "exec", "--json", "--yolo"]
     if model:
         command += ["--model", model]
     command += shlex.split(os.environ.get(CODEX_EXTRA_ARGS_ENV, ""))

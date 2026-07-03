@@ -95,9 +95,10 @@ export function buildAgentPrompt(
 
   sections.push(
     `Reviewer comment:\n${comment.body}`,
-    "You are running inside the repository being reviewed, so you may read files for additional context. " +
-      "Reply to the reviewer's comment directly. If they ask a question, answer it; if they point out a problem, " +
-      "assess it and suggest a fix. Keep the reply short and to the point."
+    "You are running inside the repository being reviewed, so you may read files for additional context " +
+      "and edit files when the reviewer asks for a change. Reply to the reviewer's comment directly. " +
+      "If they ask a question, answer it; if they point out a problem, assess it and fix it or suggest a fix. " +
+      "Keep the reply short and to the point."
   );
 
   return sections.join("\n\n");

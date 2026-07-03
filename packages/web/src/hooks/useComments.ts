@@ -27,6 +27,7 @@ interface CommentsContextValue {
   retryAgentReply: (id: string) => void;
   askAgentFollowUp: (id: string, question: string) => void;
   markAgentSeen: (id: string) => void;
+  setAgentExpanded: (id: string, expanded: boolean) => void;
   updateComment: (id: string, body: string) => void;
   removeComment: (id: string) => void;
   removeComments: (ids: string[]) => void;
@@ -247,6 +248,13 @@ export function useCommentsProvider(sessionId: string, runAgent?: RunAgent) {
     [patchComment]
   );
 
+  const setAgentExpanded = useCallback(
+    (id: string, expanded: boolean) => {
+      patchComment(id, (comment) => ({ ...comment, agentExpanded: expanded }));
+    },
+    [patchComment]
+  );
+
   const addComment = useCallback(
     (comment: NewReviewComment, options?: { diffContext?: string }) => {
       const newComment = normalizeReviewComment({
@@ -349,6 +357,7 @@ export function useCommentsProvider(sessionId: string, runAgent?: RunAgent) {
     retryAgentReply,
     askAgentFollowUp,
     markAgentSeen,
+    setAgentExpanded,
     updateComment,
     removeComment,
     removeComments,

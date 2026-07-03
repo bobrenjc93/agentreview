@@ -63,6 +63,11 @@ export interface ReviewComment {
   agentReplies?: CommentAgentExchange[];
   /** True when an agent run finished but the user hasn't jumped to it yet. */
   agentUnseen?: boolean;
+  /**
+   * Agent output renders folded behind a fixed-height status row until the
+   * user expands it, so streaming replies never shift the page layout.
+   */
+  agentExpanded?: boolean;
 }
 
 export function getCommentAnchorId(commentId: string): string {

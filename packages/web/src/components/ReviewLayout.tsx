@@ -1072,6 +1072,7 @@ export function ReviewLayout({
   const navigateToComment = useCallback(
     (comment: ReviewComment) => {
       commentsValue.markAgentSeen(comment.id);
+      commentsValue.setAgentExpanded(comment.id, true);
 
       const targetSegmentId = getCommentSegmentId(comment.segmentId);
       if (targetSegmentId && targetSegmentId !== selectedSegmentId) {
@@ -1866,6 +1867,7 @@ export function ReviewLayout({
                               onDelete={commentsValue.removeComment}
                               onRetryAgent={commentsValue.retryAgentReply}
                               onAskAgentFollowUp={commentsValue.askAgentFollowUp}
+                              onSetAgentExpanded={commentsValue.setAgentExpanded}
                             />
                           ))}
                         </div>

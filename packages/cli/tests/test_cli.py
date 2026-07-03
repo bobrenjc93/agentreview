@@ -1595,7 +1595,7 @@ class LocalAgentTests(unittest.TestCase):
         result = _run_codex_agent("is this ok?", "gpt-5.5-codex")
 
         command = popen_mock.call_args.args[0]
-        self.assertEqual(command[1:3], ["exec", "--json"])
+        self.assertEqual(command[1:4], ["exec", "--json", "--yolo"])
         self.assertEqual(command[command.index("--model") + 1], "gpt-5.5-codex")
         self.assertEqual(command[-1], "is this ok?")
         self.assertEqual(result["response"], "Looks fine.")
@@ -1767,6 +1767,7 @@ class LocalAgentTests(unittest.TestCase):
         command = popen_mock.call_args.args[0]
         self.assertEqual(command[1:3], ["-p", "Why is this loop O(n^2)?"])
         self.assertIn("stream-json", command)
+        self.assertIn("--dangerously-skip-permissions", command)
         self.assertEqual(command[command.index("--model") + 1], "claude-opus-4-8")
         self.assertEqual(result["response"], "Looks fine to me.")
         self.assertEqual(result["segments"][0]["type"], "text")
