@@ -20,8 +20,14 @@ import {
 } from "@/lib/payload/types";
 import { PayloadContext } from "@/hooks/usePayload";
 import { CommentsContext, useCommentsProvider } from "@/hooks/useComments";
-import { type ReviewComment, isSegmentComment } from "@/lib/comments/types";
+import {
+  type ReviewComment,
+  getCommentAnchorId,
+  getCommentFileId,
+  isSegmentComment,
+} from "@/lib/comments/types";
 import { type RunAgent } from "@/lib/comments/agent";
+import { AgentActivityBubble } from "./AgentActivityBubble";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { generateExportPrompt } from "@/lib/export/prompt";
 import { generateExportDiff } from "@/lib/export/diff";
@@ -1021,6 +1027,84 @@ export function ReviewLayout({
       element.scrollIntoView({ behavior: "smooth", block: "start" });
     }
   }, []);
+
+  const scrollRetryTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (scrollRetryTimerRef.current !== null) {
+        window.clearTimeout(scrollRetryTimerRef.current);
+      }
+    };
+  }, []);
+
+  const scrollToCommentWhenReady = useCallback((commentId: string) => {
+    if (scrollRetryTimerRef.current !== null) {
+      window.clearTimeout(scrollRetryTimerRef.current);
+      scrollRetryTimerRef.current = null;
+    }
+
+    const anchorId = getCommentAnchorId(commentId);
+    const deadline = Date.now() + 6000;
+
+    const attempt = () => {
+      const element = document.getElementById(anchorId);
+      if (element) {
+        element.scrollIntoView({ behavior: "smooth", block: "center" });
+        element.classList.remove("agent-comment-flash");
+        // restart the flash animation even if it ran before
+        void element.offsetWidth;
+        element.classList.add("agent-comment-flash");
+        scrollRetryTimerRef.current = null;
+        return;
+      }
+      if (Date.now() < deadline) {
+        // segment switches and deferred diff batches render asynchronously
+        scrollRetryTimerRef.current = window.setTimeout(attempt, 200);
+      } else {
+        scrollRetryTimerRef.current = null;
+      }
+    };
+
+    attempt();
+  }, []);
+
+  const navigateToComment = useCallback(
+    (comment: ReviewComment) => {
+      commentsValue.markAgentSeen(comment.id);
+
+      const targetSegmentId = getCommentSegmentId(comment.segmentId);
+      if (targetSegmentId && targetSegmentId !== selectedSegmentId) {
+        selectSegment(targetSegmentId);
+      }
+
+      if (!isSegmentComment(comment) && comment.filePath) {
+        setFilePathExpanded(comment.filePath, true);
+        const fileId = getCommentFileId(comment);
+        if (fileId) {
+          setSelectedFileId(fileId);
+        }
+      }
+
+      scrollToCommentWhenReady(comment.id);
+    },
+    [
+      commentsValue,
+      getCommentSegmentId,
+      scrollToCommentWhenReady,
+      selectSegment,
+      selectedSegmentId,
+      setFilePathExpanded,
+    ]
+  );
+
+  const dismissAllAgentNotifications = useCallback(() => {
+    commentsValue.comments.forEach((comment) => {
+      if (comment.agentUnseen) {
+        commentsValue.markAgentSeen(comment.id);
+      }
+    });
+  }, [commentsValue]);
 
   const addSegmentComment = useCallback(
     (body: string) => {
@@ -2119,6 +2203,14 @@ export function ReviewLayout({
               Clear comments
             </button>
           </div>
+        )}
+        {runAgent && (
+          <AgentActivityBubble
+            comments={commentsValue.comments}
+            onNavigateToComment={navigateToComment}
+            onDismiss={commentsValue.markAgentSeen}
+            onDismissAll={dismissAllAgentNotifications}
+          />
         )}
       </CommentsContext.Provider>
     </PayloadContext.Provider>

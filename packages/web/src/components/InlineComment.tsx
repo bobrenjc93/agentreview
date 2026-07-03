@@ -6,6 +6,7 @@ import {
   type CommentAgentSegment,
   type ReviewComment,
   formatReviewCommentRange,
+  getCommentAnchorId,
 } from "@/lib/comments/types";
 import { AgentReplyBody } from "./AgentMarkdown";
 import { InlineCommentForm } from "./InlineCommentForm";
@@ -298,7 +299,10 @@ export function InlineComment({
   }
 
   return (
-    <div className="bg-gray-800 border border-gray-700 rounded-md p-3 mx-2 my-1">
+    <div
+      id={getCommentAnchorId(comment.id)}
+      className="bg-gray-800 border border-gray-700 rounded-md p-3 mx-2 my-1 scroll-mt-24"
+    >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
           <p className="text-[11px] text-gray-500 mb-1">

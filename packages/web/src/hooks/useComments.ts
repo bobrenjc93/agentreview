@@ -25,6 +25,7 @@ interface CommentsContextValue {
   addComment: (comment: NewReviewComment, options?: { diffContext?: string }) => void;
   retryAgentReply: (id: string) => void;
   askAgentFollowUp: (id: string, question: string) => void;
+  markAgentSeen: (id: string) => void;
   updateComment: (id: string, body: string) => void;
   removeComment: (id: string) => void;
   removeComments: (ids: string[]) => void;
@@ -112,6 +113,7 @@ export function useCommentsProvider(sessionId: string, runAgent?: RunAgent) {
         agentError: undefined,
         agentSessionId: undefined,
         agentReplies: undefined,
+        agentUnseen: undefined,
       }));
 
       run(prompt, {
@@ -134,6 +136,7 @@ export function useCommentsProvider(sessionId: string, runAgent?: RunAgent) {
             agentDurationMs: result.durationMs,
             agentCostUsd: result.costUsd,
             agentSessionId: result.sessionId,
+            agentUnseen: true,
           }));
         },
         (error: unknown) => {
@@ -142,6 +145,7 @@ export function useCommentsProvider(sessionId: string, runAgent?: RunAgent) {
             agentStatus: "error",
             agentError:
               error instanceof Error ? error.message : "The agent run failed.",
+            agentUnseen: true,
           }));
         }
       );
@@ -209,12 +213,11 @@ export function useCommentsProvider(sessionId: string, runAgent?: RunAgent) {
             durationMs: result.durationMs,
             costUsd: result.costUsd,
           }));
-          if (result.sessionId) {
-            patchComment(commentId, (current) => ({
-              ...current,
-              agentSessionId: result.sessionId,
-            }));
-          }
+          patchComment(commentId, (current) => ({
+            ...current,
+            agentSessionId: result.sessionId ?? current.agentSessionId,
+            agentUnseen: true,
+          }));
         },
         (error: unknown) => {
           patchExchange((exchange) => ({
@@ -222,7 +225,20 @@ export function useCommentsProvider(sessionId: string, runAgent?: RunAgent) {
             status: "error" as const,
             error: error instanceof Error ? error.message : "The agent run failed.",
           }));
+          patchComment(commentId, (current) => ({
+            ...current,
+            agentUnseen: true,
+          }));
         }
+      );
+    },
+    [patchComment]
+  );
+
+  const markAgentSeen = useCallback(
+    (id: string) => {
+      patchComment(id, (comment) =>
+        comment.agentUnseen ? { ...comment, agentUnseen: false } : comment
       );
     },
     [patchComment]
@@ -324,6 +340,7 @@ export function useCommentsProvider(sessionId: string, runAgent?: RunAgent) {
     addComment,
     retryAgentReply,
     askAgentFollowUp,
+    markAgentSeen,
     updateComment,
     removeComment,
     removeComments,

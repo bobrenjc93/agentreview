@@ -905,3 +905,17 @@ html[data-theme="light"] .agent-markdown pre {
 .primary-action-button:disabled {
   color: #6b7280;
 }
+
+@keyframes agentCommentFlash {
+  0%,
+  60% {
+    box-shadow: 0 0 0 2px rgba(34, 211, 238, 0.65);
+  }
+  100% {
+    box-shadow: 0 0 0 2px rgba(34, 211, 238, 0);
+  }
+}
+
+.agent-comment-flash {
+  animation: agentCommentFlash 2.2s ease-out 1;
+}

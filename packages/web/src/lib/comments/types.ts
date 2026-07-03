@@ -61,6 +61,12 @@ export interface ReviewComment {
   agentCostUsd?: number;
   agentSessionId?: string;
   agentReplies?: CommentAgentExchange[];
+  /** True when an agent run finished but the user hasn't jumped to it yet. */
+  agentUnseen?: boolean;
+}
+
+export function getCommentAnchorId(commentId: string): string {
+  return `comment-${encodeURIComponent(commentId)}`;
 }
 
 export type NewReviewComment = Omit<ReviewComment, "id" | "createdAt">;
