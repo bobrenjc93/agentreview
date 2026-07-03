@@ -1676,6 +1676,9 @@ class LocalAgentTests(unittest.TestCase):
         killed = []
 
         class FakeProc:
+            # nonexistent pid: the process-group kill fails and falls back to kill()
+            pid = 2**22 + 54321
+
             def kill(self):
                 killed.append(True)
 

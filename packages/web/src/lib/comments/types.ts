@@ -68,6 +68,8 @@ export interface ReviewComment {
    * user expands it, so streaming replies never shift the page layout.
    */
   agentExpanded?: boolean;
+  /** True after the user clicked Cancel, until the run actually ends. */
+  agentCancelRequested?: boolean;
 }
 
 export function getCommentAnchorId(commentId: string): string {

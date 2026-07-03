@@ -127,6 +127,7 @@ export function useCommentsProvider(
         agentSessionId: undefined,
         agentReplies: undefined,
         agentUnseen: undefined,
+        agentCancelRequested: undefined,
       }));
 
       run(prompt, {
@@ -145,6 +146,7 @@ export function useCommentsProvider(
               ...comment,
               agentStatus: "cancelled",
               agentFinishedAt: new Date().toISOString(),
+              agentCancelRequested: undefined,
             }));
             return;
           }
@@ -152,6 +154,7 @@ export function useCommentsProvider(
             ...comment,
             agentStatus: "done",
             agentFinishedAt: new Date().toISOString(),
+            agentCancelRequested: undefined,
             agentReply: result.response,
             agentSegments: result.segments ?? comment.agentSegments,
             agentError: undefined,
@@ -166,6 +169,7 @@ export function useCommentsProvider(
           patchComment(commentId, (comment) => ({
             ...comment,
             agentStatus: "error",
+            agentCancelRequested: undefined,
             agentError:
               error instanceof Error ? error.message : "The agent run failed.",
             agentUnseen: true,
@@ -176,12 +180,28 @@ export function useCommentsProvider(
     [patchComment]
   );
 
-  const cancelAgentReply = useCallback((commentId: string) => {
-    const cancel = cancelAgentRef.current;
-    const runKey = agentRunKeyById.current.get(commentId);
-    if (!cancel || !runKey) return;
-    void cancel(runKey);
-  }, []);
+  const cancelAgentReply = useCallback(
+    (commentId: string) => {
+      const cancel = cancelAgentRef.current;
+      const runKey = agentRunKeyById.current.get(commentId);
+      if (!cancel || !runKey) return;
+      patchComment(commentId, (comment) => ({
+        ...comment,
+        agentCancelRequested: true,
+      }));
+      cancel(runKey).then((cancelled) => {
+        if (!cancelled) {
+          // nothing to kill server-side (already finished or never started);
+          // clear the transient state so the row doesn't stick on Cancelling
+          patchComment(commentId, (comment) => ({
+            ...comment,
+            agentCancelRequested: false,
+          }));
+        }
+      });
+    },
+    [patchComment]
+  );
 
   const askAgentFollowUp = useCallback(
     (commentId: string, question: string) => {

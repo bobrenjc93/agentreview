@@ -310,10 +310,11 @@ function AgentReplySection({
         <button
           type="button"
           onClick={() => onCancelAgent(comment.id)}
-          className="shrink-0 text-xs text-gray-500 transition-colors hover:text-red-400"
+          disabled={!!comment.agentCancelRequested}
+          className="shrink-0 text-xs text-gray-500 transition-colors hover:text-red-400 disabled:cursor-default disabled:text-gray-600 disabled:hover:text-gray-600"
           title="Stop this agent run"
         >
-          Cancel
+          {comment.agentCancelRequested ? "Cancelling…" : "Cancel"}
         </button>
       )}
     </div>

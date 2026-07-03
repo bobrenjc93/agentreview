@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tarfile
@@ -243,16 +244,30 @@ def _spawn_agent(command: list[str], cli_name: str) -> subprocess.Popen:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            # own process group so cancellation can kill tool subprocesses
+            # too — they inherit the stdout pipe and would otherwise keep it
+            # open (and our read loop blocked) after the parent dies
+            start_new_session=True,
         )
     except OSError as exc:
         raise LocalAgentError(f"Failed to launch the {cli_name} CLI: {exc}") from exc
+
+
+def _kill_agent_process(proc: subprocess.Popen) -> None:
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (OSError, ProcessLookupError):
+        try:
+            proc.kill()
+        except OSError:
+            pass
 
 
 def _iter_agent_stdout(proc: subprocess.Popen, deadline: float) -> "Iterator[str]":
     assert proc.stdout is not None
     for line in proc.stdout:
         if monotonic() > deadline:
-            proc.kill()
+            _kill_agent_process(proc)
             raise LocalAgentError(
                 f"The agent run timed out after {AGENT_TIMEOUT_SECONDS} seconds."
             )
@@ -264,7 +279,7 @@ def _finish_agent_process(proc: subprocess.Popen, deadline: float) -> tuple[int,
     try:
         code = proc.wait(timeout=max(1.0, deadline - monotonic()))
     except subprocess.TimeoutExpired as exc:
-        proc.kill()
+        _kill_agent_process(proc)
         raise LocalAgentError(
             f"The agent run timed out after {AGENT_TIMEOUT_SECONDS} seconds."
         ) from exc
@@ -322,7 +337,7 @@ def _stream_claude_agent(
         code, stderr = _finish_agent_process(proc, deadline)
     finally:
         if proc.poll() is None:
-            proc.kill()
+            _kill_agent_process(proc)
 
     if code != 0 or result_event is None or result_event.get("is_error"):
         detail = ""
@@ -491,7 +506,7 @@ def _stream_codex_agent(
         code, stderr = _finish_agent_process(proc, deadline)
     finally:
         if proc.poll() is None:
-            proc.kill()
+            _kill_agent_process(proc)
 
     if code != 0 or (not completed and last_message is None):
         detail = ""
@@ -635,7 +650,7 @@ class _LocalReviewSessionState:
             with self._lock:
                 # a cancel may have arrived before the process spawned
                 if run_key in self._cancelled_run_keys:
-                    proc.kill()
+                    _kill_agent_process(proc)
                 self._agent_procs_by_run_key[run_key] = proc
 
         backend, claude_model, codex_model = self.get_agent_config()
@@ -687,10 +702,7 @@ class _LocalReviewSessionState:
             proc = self._agent_procs_by_run_key.get(run_key)
         if proc is None:
             return False
-        try:
-            proc.kill()
-        except OSError:
-            pass
+        _kill_agent_process(proc)
         return True
 
     def _consume_cancellation(self, run_key: str) -> bool:
