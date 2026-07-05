@@ -13,9 +13,12 @@ import {
   normalizeReviewComment,
 } from "@/lib/comments/types";
 import {
+  buildAgentAttemptNote,
   buildAgentPrompt,
+  buildAgentRetryWaitNote,
   buildAgentRunLabel,
   buildFollowUpPrompt,
+  runAgentWithRetry,
   type CancelAgent,
   type RunAgent,
 } from "@/lib/comments/agent";
@@ -27,6 +30,7 @@ interface CommentsContextValue {
   addComment: (comment: NewReviewComment, options?: { diffContext?: string }) => void;
   retryAgentReply: (id: string) => void;
   askAgentFollowUp: (id: string, question: string) => void;
+  retryAgentFollowUp: (id: string, exchangeId: string) => void;
   cancelAgentReply: (id: string) => void;
   markAgentSeen: (id: string) => void;
   setAgentExpanded: (id: string, expanded: boolean) => void;
@@ -58,6 +62,9 @@ export function useCommentsProvider(
   const [loadedSessionId, setLoadedSessionId] = useState<string | null>(null);
   const agentPromptById = useRef(new Map<string, string>());
   const agentRunKeyById = useRef(new Map<string, string>());
+  // Run keys the user cancelled; lets automatic retries stop during backoff,
+  // when there is no server-side process to kill.
+  const cancelledRunKeys = useRef(new Set<string>());
   const runAgentRef = useRef<RunAgent | undefined>(runAgent);
   runAgentRef.current = runAgent;
   const cancelAgentRef = useRef<CancelAgent | undefined>(cancelAgent);
@@ -78,13 +85,27 @@ export function useCommentsProvider(
             agentError: interruptedError,
           };
         }
-        if (next.agentReplies?.some((exchange) => exchange.status === "pending")) {
+        if (next.agentRetryNote) {
+          next = { ...next, agentRetryNote: undefined };
+        }
+        if (
+          next.agentReplies?.some(
+            (exchange) => exchange.status === "pending" || exchange.retryNote
+          )
+        ) {
           next = {
             ...next,
             agentReplies: next.agentReplies?.map((exchange) =>
               exchange.status === "pending"
-                ? { ...exchange, status: "error" as const, error: interruptedError }
-                : exchange
+                ? {
+                    ...exchange,
+                    status: "error" as const,
+                    error: interruptedError,
+                    retryNote: undefined,
+                  }
+                : exchange.retryNote
+                  ? { ...exchange, retryNote: undefined }
+                  : exchange
             ),
           };
         }
@@ -116,6 +137,7 @@ export function useCommentsProvider(
       agentPromptById.current.set(commentId, prompt);
       const runKey = createClientId();
       agentRunKeyById.current.set(commentId, runKey);
+      cancelledRunKeys.current.delete(runKey);
       patchComment(commentId, (comment) => ({
         ...comment,
         agentStatus: "pending",
@@ -128,15 +150,31 @@ export function useCommentsProvider(
         agentReplies: undefined,
         agentUnseen: undefined,
         agentCancelRequested: undefined,
+        agentRetryNote: undefined,
       }));
 
-      run(prompt, {
+      runAgentWithRetry(run, prompt, {
         label,
         runKey,
         onSegment: (segment) => {
           patchComment(commentId, (comment) => ({
             ...comment,
             agentSegments: [...(comment.agentSegments ?? []), segment],
+          }));
+        },
+        isCancelled: () => cancelledRunKeys.current.has(runKey),
+        onRetryWait: (retryNumber, delayMs, error) => {
+          patchComment(commentId, (comment) => ({
+            ...comment,
+            agentRetryNote: buildAgentRetryWaitNote(retryNumber, delayMs, error),
+          }));
+        },
+        onAttemptStart: (attemptNumber) => {
+          // drop partial output from the failed attempt so streams don't mix
+          patchComment(commentId, (comment) => ({
+            ...comment,
+            agentSegments: undefined,
+            agentRetryNote: buildAgentAttemptNote(attemptNumber),
           }));
         },
       }).then(
@@ -147,6 +185,7 @@ export function useCommentsProvider(
               agentStatus: "cancelled",
               agentFinishedAt: new Date().toISOString(),
               agentCancelRequested: undefined,
+              agentRetryNote: undefined,
             }));
             return;
           }
@@ -155,6 +194,7 @@ export function useCommentsProvider(
             agentStatus: "done",
             agentFinishedAt: new Date().toISOString(),
             agentCancelRequested: undefined,
+            agentRetryNote: undefined,
             agentReply: result.response,
             agentSegments: result.segments ?? comment.agentSegments,
             agentError: undefined,
@@ -170,6 +210,7 @@ export function useCommentsProvider(
             ...comment,
             agentStatus: "error",
             agentCancelRequested: undefined,
+            agentRetryNote: undefined,
             agentError:
               error instanceof Error ? error.message : "The agent run failed.",
             agentUnseen: true,
@@ -185,6 +226,8 @@ export function useCommentsProvider(
       const cancel = cancelAgentRef.current;
       const runKey = agentRunKeyById.current.get(commentId);
       if (!cancel || !runKey) return;
+      // stop any automatic retry loop that is waiting out a backoff
+      cancelledRunKeys.current.add(runKey);
       patchComment(commentId, (comment) => ({
         ...comment,
         agentCancelRequested: true,
@@ -192,7 +235,9 @@ export function useCommentsProvider(
       cancel(runKey).then((cancelled) => {
         if (!cancelled) {
           // nothing to kill server-side (already finished or never started);
-          // clear the transient state so the row doesn't stick on Cancelling
+          // clear the transient state so the row doesn't stick on Cancelling.
+          // A retry loop waiting out a backoff still sees the cancelled run
+          // key and resolves as cancelled on its own.
           patchComment(commentId, (comment) => ({
             ...comment,
             agentCancelRequested: false,
@@ -203,20 +248,18 @@ export function useCommentsProvider(
     [patchComment]
   );
 
-  const askAgentFollowUp = useCallback(
-    (commentId: string, question: string) => {
+  const startAgentFollowUpRun = useCallback(
+    (commentId: string, exchangeId: string, question: string) => {
       const run = runAgentRef.current;
-      const trimmed = question.trim();
-      if (!run || !trimmed) return;
+      if (!run) return;
 
       const comment = commentsRef.current.find((c) => c.id === commentId);
-      if (!comment || comment.agentStatus !== "done") return;
+      if (!comment) return;
 
       const resumeSessionId = comment.agentSessionId;
-      const prompt = buildFollowUpPrompt(comment, trimmed, {
+      const prompt = buildFollowUpPrompt(comment, question, {
         canResume: !!resumeSessionId,
       });
-      const exchangeId = createClientId();
       const patchExchange = (
         patch: (exchange: NonNullable<ReviewComment["agentReplies"]>[number]) =>
           NonNullable<ReviewComment["agentReplies"]>[number]
@@ -229,6 +272,90 @@ export function useCommentsProvider(
         }));
       };
 
+      const runKey = createClientId();
+      agentRunKeyById.current.set(commentId, runKey);
+      cancelledRunKeys.current.delete(runKey);
+
+      runAgentWithRetry(run, prompt, {
+        resumeSessionId,
+        label: buildAgentRunLabel(comment, "reply"),
+        runKey,
+        onSegment: (segment: CommentAgentSegment) => {
+          patchExchange((exchange) => ({
+            ...exchange,
+            segments: [...(exchange.segments ?? []), segment],
+          }));
+        },
+        isCancelled: () => cancelledRunKeys.current.has(runKey),
+        onRetryWait: (retryNumber, delayMs, error) => {
+          patchExchange((exchange) => ({
+            ...exchange,
+            retryNote: buildAgentRetryWaitNote(retryNumber, delayMs, error),
+          }));
+        },
+        onAttemptStart: (attemptNumber) => {
+          // drop partial output from the failed attempt so streams don't mix
+          patchExchange((exchange) => ({
+            ...exchange,
+            segments: undefined,
+            retryNote: buildAgentAttemptNote(attemptNumber),
+          }));
+        },
+      }).then(
+        (result) => {
+          if (result.cancelled) {
+            patchExchange((exchange) => ({
+              ...exchange,
+              status: "cancelled" as const,
+              finishedAt: new Date().toISOString(),
+              retryNote: undefined,
+            }));
+            return;
+          }
+          patchExchange((exchange) => ({
+            ...exchange,
+            status: "done" as const,
+            finishedAt: new Date().toISOString(),
+            reply: result.response,
+            segments: result.segments ?? exchange.segments,
+            model: result.model,
+            durationMs: result.durationMs,
+            costUsd: result.costUsd,
+            error: undefined,
+            retryNote: undefined,
+          }));
+          patchComment(commentId, (current) => ({
+            ...current,
+            agentSessionId: result.sessionId ?? current.agentSessionId,
+            agentUnseen: true,
+          }));
+        },
+        (error: unknown) => {
+          patchExchange((exchange) => ({
+            ...exchange,
+            status: "error" as const,
+            error: error instanceof Error ? error.message : "The agent run failed.",
+            retryNote: undefined,
+          }));
+          patchComment(commentId, (current) => ({
+            ...current,
+            agentUnseen: true,
+          }));
+        }
+      );
+    },
+    [patchComment]
+  );
+
+  const askAgentFollowUp = useCallback(
+    (commentId: string, question: string) => {
+      const trimmed = question.trim();
+      if (!runAgentRef.current || !trimmed) return;
+
+      const comment = commentsRef.current.find((c) => c.id === commentId);
+      if (!comment || comment.agentStatus !== "done") return;
+
+      const exchangeId = createClientId();
       patchComment(commentId, (current) => ({
         ...current,
         agentReplies: [
@@ -243,59 +370,38 @@ export function useCommentsProvider(
         ],
       }));
 
-      const runKey = createClientId();
-      agentRunKeyById.current.set(commentId, runKey);
-
-      run(prompt, {
-        resumeSessionId,
-        label: buildAgentRunLabel(comment, "reply"),
-        runKey,
-        onSegment: (segment: CommentAgentSegment) => {
-          patchExchange((exchange) => ({
-            ...exchange,
-            segments: [...(exchange.segments ?? []), segment],
-          }));
-        },
-      }).then(
-        (result) => {
-          if (result.cancelled) {
-            patchExchange((exchange) => ({
-              ...exchange,
-              status: "cancelled" as const,
-              finishedAt: new Date().toISOString(),
-            }));
-            return;
-          }
-          patchExchange((exchange) => ({
-            ...exchange,
-            status: "done" as const,
-            finishedAt: new Date().toISOString(),
-            reply: result.response,
-            segments: result.segments ?? exchange.segments,
-            model: result.model,
-            durationMs: result.durationMs,
-            costUsd: result.costUsd,
-          }));
-          patchComment(commentId, (current) => ({
-            ...current,
-            agentSessionId: result.sessionId ?? current.agentSessionId,
-            agentUnseen: true,
-          }));
-        },
-        (error: unknown) => {
-          patchExchange((exchange) => ({
-            ...exchange,
-            status: "error" as const,
-            error: error instanceof Error ? error.message : "The agent run failed.",
-          }));
-          patchComment(commentId, (current) => ({
-            ...current,
-            agentUnseen: true,
-          }));
-        }
-      );
+      startAgentFollowUpRun(commentId, exchangeId, trimmed);
     },
-    [patchComment]
+    [patchComment, startAgentFollowUpRun]
+  );
+
+  const retryAgentFollowUp = useCallback(
+    (commentId: string, exchangeId: string) => {
+      const comment = commentsRef.current.find((c) => c.id === commentId);
+      const exchange = comment?.agentReplies?.find((e) => e.id === exchangeId);
+      if (!comment || !exchange || exchange.status === "pending") return;
+
+      patchComment(commentId, (current) => ({
+        ...current,
+        agentReplies: current.agentReplies?.map((e) =>
+          e.id === exchangeId
+            ? {
+                ...e,
+                status: "pending" as const,
+                startedAt: new Date().toISOString(),
+                finishedAt: undefined,
+                reply: undefined,
+                segments: undefined,
+                error: undefined,
+                retryNote: undefined,
+              }
+            : e
+        ),
+      }));
+
+      startAgentFollowUpRun(commentId, exchangeId, exchange.question);
+    },
+    [patchComment, startAgentFollowUpRun]
   );
 
   const markAgentSeen = useCallback(
@@ -309,7 +415,12 @@ export function useCommentsProvider(
 
   const setAgentExpanded = useCallback(
     (id: string, expanded: boolean) => {
-      patchComment(id, (comment) => ({ ...comment, agentExpanded: expanded }));
+      // opening the reply counts as reading it, so clear the unseen flag
+      patchComment(id, (comment) => ({
+        ...comment,
+        agentExpanded: expanded,
+        agentUnseen: expanded ? false : comment.agentUnseen,
+      }));
     },
     [patchComment]
   );
@@ -415,6 +526,7 @@ export function useCommentsProvider(
     addComment,
     retryAgentReply,
     askAgentFollowUp,
+    retryAgentFollowUp,
     cancelAgentReply,
     markAgentSeen,
     setAgentExpanded,

@@ -642,6 +642,7 @@ export function DiffView({
     addComment,
     retryAgentReply,
     askAgentFollowUp,
+    retryAgentFollowUp,
     cancelAgentReply,
     setAgentExpanded,
     getCommentsForFile,
@@ -1439,6 +1440,7 @@ export function DiffView({
             onDelete={removeComment}
             onRetryAgent={retryAgentReply}
             onAskAgentFollowUp={askAgentFollowUp}
+            onRetryAgentFollowUp={retryAgentFollowUp}
             onCancelAgent={cancelAgentReply}
             onSetAgentExpanded={setAgentExpanded}
           />

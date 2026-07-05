@@ -19,6 +19,7 @@ interface InlineCommentProps {
   onDelete: (id: string) => void;
   onRetryAgent?: (id: string) => void;
   onAskAgentFollowUp?: (id: string, question: string) => void;
+  onRetryAgentFollowUp?: (id: string, exchangeId: string) => void;
   onCancelAgent?: (id: string) => void;
   onSetAgentExpanded?: (id: string, expanded: boolean) => void;
 }
@@ -78,19 +79,70 @@ function useElapsedSeconds(startedAt?: string, running = true): number {
   return elapsedSeconds;
 }
 
-function AgentPendingRow({ startedAt }: { startedAt?: string }) {
+function AgentPendingRow({
+  startedAt,
+  retryNote,
+}: {
+  startedAt?: string;
+  retryNote?: string;
+}) {
   const elapsedSeconds = useElapsedSeconds(startedAt);
 
   return (
     <>
-      <span className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-cyan-400/30 border-t-cyan-400" />
+      <span
+        className={`h-3 w-3 shrink-0 animate-spin rounded-full border-2 ${
+          retryNote
+            ? "border-amber-400/30 border-t-amber-400"
+            : "border-cyan-400/30 border-t-cyan-400"
+        }`}
+      />
       <span className="truncate text-xs text-gray-400">
-        Agent is thinking…
-        <span className="ml-1.5 font-mono tabular-nums text-cyan-400/90">
-          {formatElapsedSeconds(elapsedSeconds)}
-        </span>
+        {retryNote ? (
+          <span className="text-amber-400/90">{retryNote}</span>
+        ) : (
+          <>
+            Agent is thinking…
+            <span className="ml-1.5 font-mono tabular-nums text-cyan-400/90">
+              {formatElapsedSeconds(elapsedSeconds)}
+            </span>
+          </>
+        )}
       </span>
     </>
+  );
+}
+
+/**
+ * Error state with a prominent retry affordance. Agent errors can carry CLI
+ * stderr/stdout detail, so the message renders in a scrollable block that
+ * preserves line breaks instead of a single truncated line.
+ */
+function AgentErrorBody({
+  error,
+  onRetry,
+  retryLabel = "Retry",
+}: {
+  error?: string;
+  onRetry?: () => void;
+  retryLabel?: string;
+}) {
+  return (
+    <div className="mt-2 rounded-md border border-red-400/30 bg-red-400/5 px-2.5 py-2">
+      <p className="text-xs font-medium text-red-400">Agent reply failed</p>
+      <pre className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-4 text-red-300/90">
+        {error || "unknown error"}
+      </pre>
+      {onRetry && (
+        <button
+          type="button"
+          onClick={onRetry}
+          className="mt-1.5 rounded border border-gray-600 px-2 py-0.5 text-xs text-blue-400 transition-colors hover:border-blue-400 hover:text-blue-300"
+        >
+          {retryLabel}
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -115,8 +167,10 @@ function AgentPendingBody({ segments }: { segments?: CommentAgentSegment[] }) {
 
 function AgentReplyThread({
   exchange,
+  onRetry,
 }: {
   exchange: CommentAgentExchange;
+  onRetry?: () => void;
 }) {
   return (
     <div className="mt-2 border-t border-gray-700/70 pt-2">
@@ -125,15 +179,29 @@ function AgentReplyThread({
       </p>
       <p className="text-sm text-gray-200 whitespace-pre-wrap">{exchange.question}</p>
       {exchange.status === "pending" ? (
-        <AgentPendingBody segments={exchange.segments} />
+        <>
+          {exchange.retryNote && (
+            <p className="mt-2 text-xs text-amber-400/90">{exchange.retryNote}</p>
+          )}
+          <AgentPendingBody segments={exchange.segments} />
+        </>
       ) : exchange.status === "error" ? (
-        <p className="mt-2 text-xs text-red-400">
-          Agent reply failed: {exchange.error || "unknown error"}
-        </p>
+        <AgentErrorBody error={exchange.error} onRetry={onRetry} />
       ) : exchange.status === "cancelled" ? (
-        <p className="mt-2 text-xs text-gray-500">
-          This run was cancelled before it finished.
-        </p>
+        <div className="mt-2">
+          <p className="text-xs text-gray-500">
+            This run was cancelled before it finished.
+          </p>
+          {onRetry && (
+            <button
+              type="button"
+              onClick={onRetry}
+              className="mt-1 text-xs text-blue-400 hover:text-blue-300 transition-colors"
+            >
+              Run again
+            </button>
+          )}
+        </div>
       ) : (
         <div className="mt-2">
           <p className="mb-1 text-[11px] text-cyan-400/90">
@@ -225,12 +293,14 @@ function AgentReplySection({
   comment,
   onRetryAgent,
   onAskAgentFollowUp,
+  onRetryAgentFollowUp,
   onCancelAgent,
   onSetAgentExpanded,
 }: {
   comment: ReviewComment;
   onRetryAgent?: (id: string) => void;
   onAskAgentFollowUp?: (id: string, question: string) => void;
+  onRetryAgentFollowUp?: (id: string, exchangeId: string) => void;
   onCancelAgent?: (id: string) => void;
   onSetAgentExpanded?: (id: string, expanded: boolean) => void;
 }) {
@@ -242,6 +312,16 @@ function AgentReplySection({
     (exchange) => exchange.status === "pending"
   );
   const isBusy = comment.agentStatus === "pending" || hasPendingExchange;
+  const pendingExchange = exchanges.find(
+    (exchange) => exchange.status === "pending"
+  );
+  const failedExchange = exchanges.find(
+    (exchange) => exchange.status === "error"
+  );
+  // last failed follow-up drives the collapsed error row when the initial
+  // reply itself succeeded
+  const showsFollowUpError =
+    comment.agentStatus !== "error" && !isBusy && !!failedExchange;
 
   // The status row keeps one fixed-height line regardless of agent state, so
   // streaming output and completions never shift the page layout while folded.
@@ -265,15 +345,27 @@ function AgentReplySection({
             startedAt={
               comment.agentStatus === "pending"
                 ? comment.agentStartedAt
-                : exchanges.find((exchange) => exchange.status === "pending")
-                    ?.startedAt
+                : pendingExchange?.startedAt
+            }
+            retryNote={
+              comment.agentStatus === "pending"
+                ? comment.agentRetryNote
+                : pendingExchange?.retryNote
             }
           />
-        ) : comment.agentStatus === "error" ? (
+        ) : comment.agentStatus === "error" || showsFollowUpError ? (
           <>
             <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-red-400" />
             <span className="truncate text-xs text-red-400">
-              Agent reply failed{comment.agentError ? `: ${comment.agentError}` : ""}
+              Agent reply failed
+              {(() => {
+                const message =
+                  comment.agentStatus === "error"
+                    ? comment.agentError
+                    : failedExchange?.error;
+                const firstLine = message?.split("\n")[0]?.trim();
+                return firstLine ? `: ${firstLine}` : "";
+              })()}
             </span>
           </>
         ) : comment.agentStatus === "cancelled" ? (
@@ -317,6 +409,26 @@ function AgentReplySection({
           {comment.agentCancelRequested ? "Cancelling…" : "Cancel"}
         </button>
       )}
+      {!isBusy && comment.agentStatus === "error" && onRetryAgent && (
+        <button
+          type="button"
+          onClick={() => onRetryAgent(comment.id)}
+          className="shrink-0 text-xs text-blue-400 transition-colors hover:text-blue-300"
+          title="Run the agent again"
+        >
+          Retry
+        </button>
+      )}
+      {showsFollowUpError && failedExchange && onRetryAgentFollowUp && (
+        <button
+          type="button"
+          onClick={() => onRetryAgentFollowUp(comment.id, failedExchange.id)}
+          className="shrink-0 text-xs text-blue-400 transition-colors hover:text-blue-300"
+          title="Run the failed follow-up again"
+        >
+          Retry
+        </button>
+      )}
     </div>
   );
 
@@ -328,20 +440,10 @@ function AgentReplySection({
           {comment.agentStatus === "pending" ? (
             <AgentPendingBody segments={comment.agentSegments} />
           ) : comment.agentStatus === "error" ? (
-            <div className="mt-1">
-              <p className="text-xs text-red-400">
-                Agent reply failed: {comment.agentError || "unknown error"}
-              </p>
-              {onRetryAgent && (
-                <button
-                  type="button"
-                  onClick={() => onRetryAgent(comment.id)}
-                  className="mt-1 text-xs text-blue-400 hover:text-blue-300 transition-colors"
-                >
-                  Retry
-                </button>
-              )}
-            </div>
+            <AgentErrorBody
+              error={comment.agentError}
+              onRetry={onRetryAgent ? () => onRetryAgent(comment.id) : undefined}
+            />
           ) : comment.agentStatus === "cancelled" ? (
             <div className="mt-1">
               {comment.agentSegments && comment.agentSegments.length > 0 && (
@@ -369,7 +471,15 @@ function AgentReplySection({
                 fallbackText={comment.agentReply}
               />
               {exchanges.map((exchange) => (
-                <AgentReplyThread key={exchange.id} exchange={exchange} />
+                <AgentReplyThread
+                  key={exchange.id}
+                  exchange={exchange}
+                  onRetry={
+                    onRetryAgentFollowUp
+                      ? () => onRetryAgentFollowUp(comment.id, exchange.id)
+                      : undefined
+                  }
+                />
               ))}
               {onAskAgentFollowUp && !hasPendingExchange && (
                 <AgentFollowUpForm
@@ -390,6 +500,7 @@ export function InlineComment({
   onDelete,
   onRetryAgent,
   onAskAgentFollowUp,
+  onRetryAgentFollowUp,
   onCancelAgent,
   onSetAgentExpanded,
 }: InlineCommentProps) {
@@ -471,6 +582,7 @@ export function InlineComment({
         comment={comment}
         onRetryAgent={onRetryAgent}
         onAskAgentFollowUp={onAskAgentFollowUp}
+        onRetryAgentFollowUp={onRetryAgentFollowUp}
         onCancelAgent={onCancelAgent}
         onSetAgentExpanded={onSetAgentExpanded}
       />

@@ -22,6 +22,8 @@ export interface CommentAgentExchange {
   model?: string;
   durationMs?: number;
   costUsd?: number;
+  /** Transient note shown while an automatic retry is waiting or running. */
+  retryNote?: string;
 }
 
 interface CommentLineRange {
@@ -70,6 +72,8 @@ export interface ReviewComment {
   agentExpanded?: boolean;
   /** True after the user clicked Cancel, until the run actually ends. */
   agentCancelRequested?: boolean;
+  /** Transient note shown while an automatic retry is waiting or running. */
+  agentRetryNote?: string;
 }
 
 export function getCommentAnchorId(commentId: string): string {

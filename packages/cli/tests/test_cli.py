@@ -1836,6 +1836,24 @@ class LocalAgentTests(unittest.TestCase):
 
     @patch("agentreview.local_ui.subprocess.Popen")
     @patch("agentreview.local_ui.shutil.which", return_value="/usr/bin/claude")
+    def test_run_claude_agent_failure_includes_stderr_tail(
+        self, which_mock, popen_mock
+    ) -> None:
+        stderr = "\n".join(f"line {i}" for i in range(1, 31))
+        popen_mock.return_value = _FakeAgentProcess("", stderr=stderr, returncode=1)
+
+        with self.assertRaises(LocalAgentError) as ctx:
+            _run_claude_agent("prompt", "claude-opus-4-8")
+
+        message = str(ctx.exception)
+        self.assertIn("The claude CLI exited with code 1.", message)
+        self.assertIn("stderr:", message)
+        # keeps the tail of stderr (where errors land), not the beginning
+        self.assertIn("line 30", message)
+        self.assertNotIn("line 1\n", message)
+
+    @patch("agentreview.local_ui.subprocess.Popen")
+    @patch("agentreview.local_ui.shutil.which", return_value="/usr/bin/claude")
     def test_stream_claude_agent_yields_segments_then_done(
         self, which_mock, popen_mock
     ) -> None:

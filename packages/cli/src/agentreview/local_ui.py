@@ -236,6 +236,36 @@ def _iter_json_lines(lines) -> "Iterator[dict]":
             yield event
 
 
+AGENT_ERROR_DETAIL_MAX_CHARS = 2000
+AGENT_ERROR_DETAIL_MAX_LINES = 15
+
+
+def _format_agent_error_detail(output: str, label: str) -> str:
+    """Keep the tail of the CLI's output — errors print last — within limits."""
+    lines = output.strip().splitlines()
+    if not lines:
+        return ""
+    tail = lines[-AGENT_ERROR_DETAIL_MAX_LINES:]
+    detail = "\n".join(tail).strip()
+    if len(detail) > AGENT_ERROR_DETAIL_MAX_CHARS:
+        detail = "…" + detail[-AGENT_ERROR_DETAIL_MAX_CHARS:]
+    if len(tail) < len(lines):
+        detail = "…\n" + detail
+    return f"{label}:\n{detail}"
+
+
+def _build_agent_failure_message(
+    cli_name: str, code: int, result_detail: str, stderr: str
+) -> str:
+    parts = [f"The {cli_name} CLI exited with code {code}."]
+    if result_detail.strip():
+        parts.append(result_detail.strip())
+    stderr_detail = _format_agent_error_detail(stderr, "stderr")
+    if stderr_detail:
+        parts.append(stderr_detail)
+    return "\n".join(parts)
+
+
 def _spawn_agent(command: list[str], cli_name: str) -> subprocess.Popen:
     try:
         return subprocess.Popen(
@@ -340,15 +370,12 @@ def _stream_claude_agent(
             _kill_agent_process(proc)
 
     if code != 0 or result_event is None or result_event.get("is_error"):
-        detail = ""
+        result_detail = ""
         if result_event and result_event.get("result"):
-            detail = str(result_event["result"])
-        elif stderr.strip():
-            detail = stderr.strip().splitlines()[-1]
-        message = f"The claude CLI exited with code {code}."
-        if detail:
-            message = f"{message} {detail}"
-        raise LocalAgentError(message)
+            result_detail = str(result_event["result"])
+        raise LocalAgentError(
+            _build_agent_failure_message("claude", code, result_detail, stderr)
+        )
 
     text_parts = [segment["text"] for segment in segments if segment["type"] == "text"]
     response_text = "\n\n".join(text_parts) or str(result_event.get("result") or "")
@@ -509,13 +536,9 @@ def _stream_codex_agent(
             _kill_agent_process(proc)
 
     if code != 0 or (not completed and last_message is None):
-        detail = ""
-        if stderr.strip():
-            detail = stderr.strip().splitlines()[-1]
-        message = f"The codex CLI exited with code {code}."
-        if detail:
-            message = f"{message} {detail}"
-        raise LocalAgentError(message)
+        raise LocalAgentError(
+            _build_agent_failure_message("codex", code, "", stderr)
+        )
 
     text_parts = [segment["text"] for segment in segments if segment["type"] == "text"]
     response_text = "\n\n".join(text_parts) or (last_message or "")

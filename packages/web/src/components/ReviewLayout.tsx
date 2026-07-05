@@ -1550,8 +1550,18 @@ export function ReviewLayout({
             </div>
           </header>
           {refreshError ? (
-            <div className="shrink-0 border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-sm text-amber-100">
-              {refreshError}
+            <div className="flex shrink-0 items-center gap-3 border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-sm text-amber-100">
+              <span className="min-w-0 flex-1">{refreshError}</span>
+              {onRefresh && (
+                <button
+                  type="button"
+                  onClick={() => void onRefresh()}
+                  disabled={isRefreshing}
+                  className="shrink-0 rounded border border-amber-400/40 px-2 py-0.5 text-xs font-medium text-amber-100 transition-colors hover:bg-amber-500/20 disabled:opacity-50"
+                >
+                  {isRefreshing ? "Retrying..." : "Retry"}
+                </button>
+              )}
             </div>
           ) : null}
 
@@ -1869,6 +1879,7 @@ export function ReviewLayout({
                               onDelete={commentsValue.removeComment}
                               onRetryAgent={commentsValue.retryAgentReply}
                               onAskAgentFollowUp={commentsValue.askAgentFollowUp}
+                              onRetryAgentFollowUp={commentsValue.retryAgentFollowUp}
                               onCancelAgent={commentsValue.cancelAgentReply}
                               onSetAgentExpanded={commentsValue.setAgentExpanded}
                             />

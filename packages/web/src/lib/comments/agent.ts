@@ -60,6 +60,83 @@ export type RunAgent = (
   options?: RunAgentOptions
 ) => Promise<AgentReplyResult>;
 
+/** Backoff before each automatic retry of a failed agent run. */
+export const AGENT_RETRY_DELAYS_MS = [5_000, 10_000, 20_000];
+
+export const AGENT_MAX_ATTEMPTS = AGENT_RETRY_DELAYS_MS.length + 1;
+
+/**
+ * Failures that a retry cannot fix (missing CLI) or where another attempt
+ * would silently absorb multiple ten-minute waits (timeouts).
+ */
+const NON_RETRYABLE_AGENT_ERROR = /was not found on PATH|timed out after/i;
+
+export interface RunAgentRetryHooks {
+  /** Called before each backoff wait; retryNumber is 1-based. */
+  onRetryWait?: (retryNumber: number, delayMs: number, error: Error) => void;
+  /** Called when a retry attempt actually starts running. */
+  onAttemptStart?: (attemptNumber: number) => void;
+  /** Polled during backoff so a user cancel can stop the loop promptly. */
+  isCancelled?: () => boolean;
+}
+
+async function sleepUnlessCancelled(
+  ms: number,
+  isCancelled?: () => boolean
+): Promise<void> {
+  const step = 250;
+  for (let waited = 0; waited < ms; waited += step) {
+    if (isCancelled?.()) return;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(step, ms - waited)));
+  }
+}
+
+/**
+ * Runs an agent request, automatically retrying transient failures (network
+ * errors, crashed CLI runs) with exponential backoff before giving up and
+ * surfacing the last error.
+ */
+export async function runAgentWithRetry(
+  run: RunAgent,
+  prompt: string,
+  options: RunAgentOptions & RunAgentRetryHooks
+): Promise<AgentReplyResult> {
+  const { onRetryWait, onAttemptStart, isCancelled, ...runOptions } = options;
+  let lastError = new Error("The agent run failed.");
+
+  for (let attempt = 1; attempt <= AGENT_MAX_ATTEMPTS; attempt++) {
+    if (attempt > 1) {
+      const delayMs = AGENT_RETRY_DELAYS_MS[attempt - 2];
+      onRetryWait?.(attempt - 1, delayMs, lastError);
+      await sleepUnlessCancelled(delayMs, isCancelled);
+      if (isCancelled?.()) return { response: "", cancelled: true };
+      onAttemptStart?.(attempt);
+    }
+    try {
+      return await run(prompt, runOptions);
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      if (isCancelled?.()) return { response: "", cancelled: true };
+      if (NON_RETRYABLE_AGENT_ERROR.test(lastError.message)) throw lastError;
+    }
+  }
+
+  throw lastError;
+}
+
+export function buildAgentRetryWaitNote(
+  retryNumber: number,
+  delayMs: number,
+  error: Error
+): string {
+  const reason = (error.message.split("\n")[0] || "unknown error").slice(0, 120);
+  return `Attempt ${retryNumber} failed (${reason}) — retrying in ${Math.round(delayMs / 1000)}s…`;
+}
+
+export function buildAgentAttemptNote(attemptNumber: number): string {
+  return `Retrying — attempt ${attemptNumber} of ${AGENT_MAX_ATTEMPTS}…`;
+}
+
 const MAX_AGENT_CONTEXT_CHARS = 48_000;
 
 function truncateAgentContext(context: string): string {
