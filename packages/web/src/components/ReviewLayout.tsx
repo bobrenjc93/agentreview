@@ -261,6 +261,10 @@ function getFileAnchorId(fileId: string): string {
   return `file-${encodeURIComponent(fileId)}`;
 }
 
+function getFileNavId(fileId: string): string {
+  return `file-nav-${encodeURIComponent(fileId)}`;
+}
+
 function getSegmentCommentActionLabel(segment: AgentReviewSegment): string {
   return segment.kind === "commit" ? "Add commit comment" : "Add segment comment";
 }
@@ -1022,13 +1026,82 @@ export function ReviewLayout({
     [commentsValue, getCommentsForSegment]
   );
 
+  // While a click-initiated smooth scroll is in flight, scroll-sync would
+  // walk the highlight through every file it passes; hold it on the target
+  // until the scroll lands (or times out after the deadline).
+  const scrollSyncTargetRef = useRef<string | null>(null);
+  const scrollSyncDeadlineRef = useRef(0);
+
   const selectFile = useCallback((fileId: string) => {
     setSelectedFileId(fileId);
     const element = document.getElementById(getFileAnchorId(fileId));
     if (element) {
+      scrollSyncTargetRef.current = fileId;
+      scrollSyncDeadlineRef.current = Date.now() + 2000;
       element.scrollIntoView({ behavior: "smooth", block: "start" });
     }
   }, []);
+
+  // Keep the Files sidebar highlight in sync with the file being read: as
+  // the diff pane scrolls, select the file whose section crosses a line just
+  // below the sticky file header.
+  useEffect(() => {
+    const container = mainScrollRef.current;
+    if (!container || !selectedSegment) return;
+    const fileIds = selectedSegment.files.map((file) =>
+      getSegmentFileId(selectedSegment.id, file.path)
+    );
+    if (fileIds.length === 0) return;
+
+    let frame: number | null = null;
+
+    const computeActiveFile = () => {
+      frame = null;
+      const referenceY = container.getBoundingClientRect().top + 80;
+      let active: string | null = null;
+      for (const fileId of fileIds) {
+        const element = document.getElementById(getFileAnchorId(fileId));
+        if (!element) continue;
+        if (element.getBoundingClientRect().top <= referenceY) {
+          active = fileId;
+        } else {
+          break;
+        }
+      }
+      if (active === null) active = fileIds[0];
+
+      if (scrollSyncTargetRef.current !== null) {
+        if (
+          active === scrollSyncTargetRef.current ||
+          Date.now() > scrollSyncDeadlineRef.current
+        ) {
+          scrollSyncTargetRef.current = null;
+        } else {
+          return;
+        }
+      }
+      setSelectedFileId((current) => (current === active ? current : active));
+    };
+
+    const handleScroll = () => {
+      if (frame !== null) return;
+      frame = requestAnimationFrame(computeActiveFile);
+    };
+
+    container.addEventListener("scroll", handleScroll, { passive: true });
+    return () => {
+      container.removeEventListener("scroll", handleScroll);
+      if (frame !== null) cancelAnimationFrame(frame);
+    };
+  }, [selectedSegment]);
+
+  // Keep the highlighted file visible inside the sidebar's own scroll pane.
+  useEffect(() => {
+    if (!selectedFileId) return;
+    document
+      .getElementById(getFileNavId(selectedFileId))
+      ?.scrollIntoView({ block: "nearest" });
+  }, [selectedFileId]);
 
   const scrollRetryTimerRef = useRef<number | null>(null);
 
@@ -1689,6 +1762,7 @@ export function ReviewLayout({
                           return (
                             <button
                               key={fileId}
+                              id={getFileNavId(fileId)}
                               type="button"
                               onClick={() => selectFile(fileId)}
                               className={`flex items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors ${
