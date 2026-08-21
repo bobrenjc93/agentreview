@@ -120,12 +120,12 @@ def build_review_payload(
     if diff_mode == "staged" and repository.kind != "git":
         raise click.UsageError("--staged is only available in Git repositories.")
 
-    use_local_git_commit_fast_path = local_mode and repository.kind == "git" and diff_mode == "commit"
+    use_local_commit_fast_path = local_mode and diff_mode == "commit"
     files = []
     segments = []
     diff_bytes = 0
 
-    if use_local_git_commit_fast_path:
+    if use_local_commit_fast_path:
         report("Reading repository metadata.")
         emit_verbose(verbose, "collecting metadata")
         meta = get_metadata(repository, diff_mode, base_ref)
@@ -135,7 +135,7 @@ def build_review_payload(
         )
         emit_verbose(
             verbose,
-            "using git commit local-mode fast path (skipping aggregate payload extraction)",
+            "using commit local-mode fast path (skipping aggregate payload extraction)",
         )
         report("Collecting commit review segments.")
         try:

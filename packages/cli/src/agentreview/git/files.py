@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+from tempfile import TemporaryDirectory
 from typing import Literal
 
 from ..payload.types import AgentReviewFile
@@ -162,6 +163,37 @@ def _read_sl_revision_file(repo: Repository, revision: str, path: str) -> str | 
     return _run_sl(repo, ["cat", "-r", revision, path], check=False)
 
 
+def _read_sl_revision_files(
+    repo: Repository,
+    revision: str,
+    paths: list[str],
+) -> dict[str, str]:
+    unique_paths = list(dict.fromkeys(path for path in paths if path))
+    if not revision or not unique_paths:
+        return {}
+
+    with TemporaryDirectory(prefix="agentreview-sl-cat-") as temp_dir:
+        output_pattern = os.path.join(temp_dir, "%p")
+        _run_sl(
+            repo,
+            ["cat", "-r", revision, "-o", output_pattern, "--", *unique_paths],
+            check=False,
+        )
+
+        contents: dict[str, str] = {}
+        output_root = os.path.realpath(temp_dir)
+        for path in unique_paths:
+            output_path = os.path.realpath(os.path.join(output_root, path))
+            try:
+                if os.path.commonpath([output_root, output_path]) != output_root:
+                    continue
+                with open(output_path, "r", encoding="utf-8", errors="replace") as f:
+                    contents[path] = f.read()
+            except (OSError, ValueError):
+                continue
+        return contents
+
+
 def _read_revision_file(repo: Repository, revision: str, path: str) -> str | None:
     if repo.kind == "git":
         return _read_git_revision_file(repo, revision, path)
@@ -196,22 +228,41 @@ def get_file_contents_for_revisions(
 ) -> list[AgentReviewFile]:
     entries = _parse_diff_into_files(raw_diff)
     results: list[AgentReviewFile] = []
+    sl_old_sources: dict[str, str] = {}
+    sl_new_sources: dict[str, str] = {}
+
+    if repo.kind == "sl":
+        old_paths = [
+            entry["old_path"] or entry["path"]
+            for entry in entries
+            if entry["status"] != "added"
+        ]
+        sl_old_sources = _read_sl_revision_files(repo, old_revision, old_paths)
+        if new_source_mode == "revision" and new_revision is not None:
+            new_paths = [entry["path"] for entry in entries if entry["status"] != "deleted"]
+            sl_new_sources = _read_sl_revision_files(repo, new_revision, new_paths)
 
     for entry in entries:
         source: str | None = None
         old_source: str | None = None
 
         if entry["status"] != "deleted":
-            source = _read_new_source(
-                repo,
-                entry["path"],
-                new_source_mode=new_source_mode,
-                new_revision=new_revision,
-            )
+            if repo.kind == "sl" and new_source_mode == "revision":
+                source = sl_new_sources.get(entry["path"])
+            else:
+                source = _read_new_source(
+                    repo,
+                    entry["path"],
+                    new_source_mode=new_source_mode,
+                    new_revision=new_revision,
+                )
 
         if entry["status"] != "added":
             old_path = entry["old_path"] or entry["path"]
-            old_source = _read_revision_file(repo, old_revision, old_path)
+            if repo.kind == "sl":
+                old_source = sl_old_sources.get(old_path)
+            else:
+                old_source = _read_revision_file(repo, old_revision, old_path)
 
         results.append(
             AgentReviewFile(

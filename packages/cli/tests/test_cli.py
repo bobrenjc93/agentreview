@@ -493,12 +493,17 @@ class GetFileContentsTests(unittest.TestCase):
         self.assertEqual(files[0].source, "clean head\n")
         self.assertEqual(files[0].old_source, "old from base\n")
 
-    @patch("agentreview.git.files.run_command")
-    def test_sl_commit_mode_translates_git_head_syntax_for_old_source(self, run_command) -> None:
+    @patch(
+        "agentreview.git.files._read_sl_revision_files",
+        return_value={"app.py": "old from base\n"},
+    )
+    def test_sl_commit_mode_translates_git_head_syntax_for_old_source(
+        self,
+        read_sl_revision_files,
+    ) -> None:
         with TemporaryDirectory() as tmpdir:
             Path(tmpdir, "app.py").write_text("new from worktree\n", encoding="utf-8")
             repo = Repository(kind="sl", root=tmpdir)
-            run_command.return_value = _completed("old from base\n", args=["sl"])
 
             files = get_file_contents(
                 repo,
@@ -513,12 +518,49 @@ class GetFileContentsTests(unittest.TestCase):
         self.assertEqual(len(files), 1)
         self.assertEqual(files[0].source, "new from worktree\n")
         self.assertEqual(files[0].old_source, "old from base\n")
-        run_command.assert_called_once_with(
-            "sl",
+        read_sl_revision_files.assert_called_once_with(
             repo,
-            ["cat", "-r", ".~4", "app.py"],
-            check=False,
+            ".~4",
+            ["app.py"],
         )
+
+    @patch("agentreview.git.files.run_command")
+    def test_sl_revision_file_reads_are_batched_by_revision(self, run_command) -> None:
+        repo = Repository(kind="sl", root="/repo")
+
+        def fake_run_command(binary, repo_arg, args, *, check=True):
+            self.assertEqual(binary, "sl")
+            self.assertEqual(repo_arg, repo)
+            self.assertFalse(check)
+            output_pattern = args[4]
+            revision = args[2]
+            for path in args[6:]:
+                output_path = Path(output_pattern.replace("%p", path))
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(f"{revision}:{path}\n", encoding="utf-8")
+            return _completed("", args=["sl"])
+
+        run_command.side_effect = fake_run_command
+        files = get_file_contents(
+            repo,
+            "diff --git a/a.py b/a.py\n"
+            "--- a/a.py\n"
+            "+++ b/a.py\n"
+            "diff --git a/b.py b/b.py\n"
+            "--- a/b.py\n"
+            "+++ b/b.py\n",
+            "commit",
+            "HEAD~4",
+            include_uncommitted=False,
+        )
+
+        self.assertEqual([file.old_source for file in files], [".~4:a.py\n", ".~4:b.py\n"])
+        self.assertEqual([file.source for file in files], [".:a.py\n", ".:b.py\n"])
+        self.assertEqual(len(run_command.call_args_list), 2)
+        self.assertEqual(run_command.call_args_list[0].args[2][:4], ["cat", "-r", ".~4", "-o"])
+        self.assertEqual(run_command.call_args_list[0].args[2][5:], ["--", "a.py", "b.py"])
+        self.assertEqual(run_command.call_args_list[1].args[2][:4], ["cat", "-r", ".", "-o"])
+        self.assertEqual(run_command.call_args_list[1].args[2][5:], ["--", "a.py", "b.py"])
 
 
 class RunCommandTests(unittest.TestCase):
@@ -673,6 +715,116 @@ class ReviewSegmentsTests(unittest.TestCase):
 
         self.assertEqual([segment.id for segment in segments], [f"commit:{commit_hash}"])
         get_diff_mock.assert_not_called()
+
+    @patch("agentreview.git.segments.get_diff", return_value="diff --git a/wip.py b/wip.py\n")
+    @patch("agentreview.git.segments.get_file_contents_for_revisions")
+    @patch("agentreview.git.segments.run_command")
+    def test_sl_commit_mode_builds_commit_and_uncommitted_segments(
+        self,
+        run_command,
+        get_file_contents_mock,
+        get_diff_mock,
+    ) -> None:
+        repo = Repository(kind="sl", root="/repo")
+        base_commit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        first_commit = "1111111111111111111111111111111111111111"
+        second_commit = "2222222222222222222222222222222222222222"
+        run_command.side_effect = [
+            _completed(f"{base_commit}\n", args=["sl"]),
+            _completed(
+                json.dumps(
+                    [
+                        {
+                            "node": first_commit,
+                            "parents": [base_commit],
+                            "desc": "First commit\n\nBody",
+                        },
+                        {
+                            "node": second_commit,
+                            "parents": [first_commit],
+                            "desc": "Second commit",
+                        },
+                    ]
+                ),
+                args=["sl"],
+            ),
+            _completed("diff --git a/a.py b/a.py\n", args=["sl"]),
+            _completed("diff --git a/b.py b/b.py\n", args=["sl"]),
+        ]
+        get_file_contents_mock.side_effect = [
+            [AgentReviewFile(path="a.py", status="modified", diff="diff --git a/a.py b/a.py\n")],
+            [AgentReviewFile(path="b.py", status="modified", diff="diff --git a/b.py b/b.py\n")],
+            [AgentReviewFile(path="wip.py", status="modified", diff="diff --git a/wip.py b/wip.py\n")],
+        ]
+
+        segments = get_review_segments(repo, "commit", "HEAD~2", include_uncommitted=True)
+
+        self.assertEqual(
+            [segment.id for segment in segments],
+            [f"commit:{first_commit}", f"commit:{second_commit}", "uncommitted"],
+        )
+        self.assertEqual([segment.commit_hash for segment in segments[:2]], ["111111111111", "222222222222"])
+        self.assertEqual(segments[0].commit_message, "First commit\n\nBody")
+        self.assertEqual(
+            run_command.call_args_list,
+            [
+                unittest.mock.call(
+                    "sl",
+                    repo,
+                    ["log", "-r", ".~2", "--template", "{node}"],
+                    check=True,
+                ),
+                unittest.mock.call(
+                    "sl",
+                    repo,
+                    [
+                        "log",
+                        "-r",
+                        f"sort(only(., {base_commit}), rev)",
+                        "-Tjson",
+                    ],
+                    check=True,
+                ),
+                unittest.mock.call(
+                    "sl",
+                    repo,
+                    ["diff", "--git", "-c", first_commit],
+                    check=True,
+                ),
+                unittest.mock.call(
+                    "sl",
+                    repo,
+                    ["diff", "--git", "-c", second_commit],
+                    check=True,
+                ),
+            ],
+        )
+        self.assertEqual(
+            get_file_contents_mock.call_args_list,
+            [
+                unittest.mock.call(
+                    repo,
+                    "diff --git a/a.py b/a.py\n",
+                    old_revision=base_commit,
+                    new_source_mode="revision",
+                    new_revision=first_commit,
+                ),
+                unittest.mock.call(
+                    repo,
+                    "diff --git a/b.py b/b.py\n",
+                    old_revision=first_commit,
+                    new_source_mode="revision",
+                    new_revision=second_commit,
+                ),
+                unittest.mock.call(
+                    repo,
+                    "diff --git a/wip.py b/wip.py\n",
+                    old_revision=".",
+                    new_source_mode="worktree",
+                ),
+            ],
+        )
+        get_diff_mock.assert_called_once_with(repo, "default", "main", include_uncommitted=True)
 
     @patch("agentreview.git.segments.run_command")
     def test_non_commit_modes_skip_review_segments(self, run_command) -> None:
@@ -968,6 +1120,75 @@ class CliExecutionTests(unittest.TestCase):
         self.assertEqual(payload.files, [])
         self.assertEqual(len(payload.segments), 1)
         self.assertTrue(callable(serve_local_review_mock.call_args.kwargs["refresh_payload"]))
+
+    @patch(
+        "agentreview.cli.get_review_segments",
+        return_value=[
+            AgentReviewSegment(
+                id="commit:abc123",
+                label="abc123",
+                kind="commit",
+                commit_hash="abc123",
+                files=[
+                    AgentReviewFile(
+                        path="app.py",
+                        status="modified",
+                        diff="diff --git a/app.py b/app.py",
+                    )
+                ],
+            )
+        ],
+    )
+    @patch("agentreview.cli.get_file_contents")
+    @patch(
+        "agentreview.cli.get_metadata",
+        return_value=PayloadMeta(
+            repo="agentreview",
+            branch="main",
+            commit_hash="abc123",
+            commit_message="Test commit",
+            timestamp="2026-03-16T00:00:00+00:00",
+            diff_mode="commit",
+            base_commit="HEAD~1",
+        ),
+    )
+    @patch("agentreview.cli.get_diff")
+    @patch(
+        "agentreview.cli.detect_repository",
+        return_value=Repository(kind="sl", root="/repo"),
+    )
+    @patch("agentreview.cli.serve_local_review")
+    def test_local_sl_commit_mode_skips_aggregate_diff_and_file_extraction(
+        self,
+        serve_local_review_mock,
+        detect_repository,
+        get_diff_mock,
+        get_metadata_mock,
+        get_file_contents_mock,
+        get_review_segments_mock,
+    ) -> None:
+        result = CliRunner().invoke(main, ["--commit", "HEAD~1", "--local"])
+
+        self.assertEqual(result.exit_code, 0)
+        detect_repository.assert_called_once_with(verbose=False)
+        get_diff_mock.assert_not_called()
+        get_metadata_mock.assert_called_once_with(
+            Repository(kind="sl", root="/repo"),
+            "commit",
+            "HEAD~1",
+        )
+        get_file_contents_mock.assert_not_called()
+        get_review_segments_mock.assert_called_once_with(
+            Repository(kind="sl", root="/repo"),
+            "commit",
+            "HEAD~1",
+            include_uncommitted=False,
+        )
+        serve_local_review_mock.assert_called_once()
+
+        payload = serve_local_review_mock.call_args.args[0]
+        self.assertEqual(payload.files, [])
+        self.assertEqual(len(payload.segments), 1)
 
     @patch("agentreview.cli.get_review_segments", return_value=[])
     @patch("agentreview.cli.get_file_contents", return_value=[])
