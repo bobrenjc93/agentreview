@@ -23,16 +23,27 @@ export const KNOWN_AGENT_MODELS = [
 // Mirrors KNOWN_CODEX_MODELS in the CLI.
 export const DEFAULT_CODEX_MODEL = "gpt-5.5";
 export const KNOWN_CODEX_MODELS = [
+  "gpt-5.6-sol",
   "gpt-5.5",
   "gpt-5.5-codex",
   "gpt-5.5-codex-mini",
   "gpt-5.1-codex-max",
+];
+export const DEFAULT_CODEX_REASONING_EFFORT = "";
+export const KNOWN_CODEX_REASONING_EFFORTS = [
+  "none",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
 ];
 
 export interface AgentReviewSettings {
   agent: AgentBackend;
   model: string;
   codexModel: string;
+  codexReasoningEffort: string;
 }
 
 export function isAgentBackend(value: unknown): value is AgentBackend {
@@ -56,6 +67,10 @@ export function loadStoredSettings(): AgentReviewSettings | null {
         model: parsed.model.trim(),
         codexModel:
           typeof parsed.codexModel === "string" ? parsed.codexModel.trim() : "",
+        codexReasoningEffort:
+          typeof parsed.codexReasoningEffort === "string"
+            ? parsed.codexReasoningEffort.trim().toLowerCase()
+            : DEFAULT_CODEX_REASONING_EFFORT,
       };
     }
   } catch {
@@ -77,6 +92,7 @@ export interface RemoteSettings extends AgentReviewSettings {
   defaultModel?: string;
   knownModels?: string[];
   knownCodexModels?: string[];
+  knownCodexReasoningEfforts?: string[];
 }
 
 /**
@@ -91,15 +107,21 @@ export async function fetchRemoteSettings(): Promise<RemoteSettings | null> {
       agent?: unknown;
       model?: unknown;
       codexModel?: unknown;
+      codexReasoningEffort?: unknown;
       defaultModel?: unknown;
       knownModels?: unknown;
       knownCodexModels?: unknown;
+      knownCodexReasoningEfforts?: unknown;
     };
     if (typeof data.model !== "string" || !data.model.trim()) return null;
     return {
       agent: isAgentBackend(data.agent) ? data.agent : DEFAULT_AGENT_BACKEND,
       model: data.model.trim(),
       codexModel: typeof data.codexModel === "string" ? data.codexModel.trim() : "",
+      codexReasoningEffort:
+        typeof data.codexReasoningEffort === "string"
+          ? data.codexReasoningEffort.trim().toLowerCase()
+          : DEFAULT_CODEX_REASONING_EFFORT,
       defaultModel:
         typeof data.defaultModel === "string" ? data.defaultModel : undefined,
       knownModels: Array.isArray(data.knownModels)
@@ -107,6 +129,11 @@ export async function fetchRemoteSettings(): Promise<RemoteSettings | null> {
         : undefined,
       knownCodexModels: Array.isArray(data.knownCodexModels)
         ? data.knownCodexModels.filter((m): m is string => typeof m === "string")
+        : undefined,
+      knownCodexReasoningEfforts: Array.isArray(data.knownCodexReasoningEfforts)
+        ? data.knownCodexReasoningEfforts.filter(
+            (effort): effort is string => typeof effort === "string"
+          )
         : undefined,
     };
   } catch {

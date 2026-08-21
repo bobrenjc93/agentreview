@@ -5,8 +5,10 @@ import {
   DEFAULT_AGENT_BACKEND,
   DEFAULT_AGENT_MODEL,
   DEFAULT_CODEX_MODEL,
+  DEFAULT_CODEX_REASONING_EFFORT,
   KNOWN_AGENT_MODELS,
   KNOWN_CODEX_MODELS,
+  KNOWN_CODEX_REASONING_EFFORTS,
   fetchRemoteSettings,
   loadStoredSettings,
   saveRemoteSettings,
@@ -69,9 +71,14 @@ export default function SettingsPage() {
   const [agent, setAgent] = useState<AgentBackend>(DEFAULT_AGENT_BACKEND);
   const [model, setModel] = useState(DEFAULT_AGENT_MODEL);
   const [codexModel, setCodexModel] = useState("");
+  const [codexReasoningEffort, setCodexReasoningEffort] = useState(
+    DEFAULT_CODEX_REASONING_EFFORT
+  );
   const [knownModels, setKnownModels] = useState<string[]>(KNOWN_AGENT_MODELS);
   const [knownCodexModels, setKnownCodexModels] =
     useState<string[]>(KNOWN_CODEX_MODELS);
+  const [knownCodexReasoningEfforts, setKnownCodexReasoningEfforts] =
+    useState<string[]>(KNOWN_CODEX_REASONING_EFFORTS);
   const [hasLocalServer, setHasLocalServer] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>("idle");
@@ -90,16 +97,24 @@ export default function SettingsPage() {
         setAgent(remote.agent);
         setModel(remote.model);
         setCodexModel(remote.codexModel);
+        setCodexReasoningEffort(remote.codexReasoningEffort);
         if (remote.knownModels && remote.knownModels.length > 0) {
           setKnownModels(remote.knownModels);
         }
         if (remote.knownCodexModels && remote.knownCodexModels.length > 0) {
           setKnownCodexModels(remote.knownCodexModels);
         }
+        if (
+          remote.knownCodexReasoningEfforts &&
+          remote.knownCodexReasoningEfforts.length > 0
+        ) {
+          setKnownCodexReasoningEfforts(remote.knownCodexReasoningEfforts);
+        }
       } else if (stored) {
         setAgent(stored.agent);
         setModel(stored.model);
         setCodexModel(stored.codexModel);
+        setCodexReasoningEffort(stored.codexReasoningEffort);
       }
       setLoaded(true);
     }
@@ -128,6 +143,7 @@ export default function SettingsPage() {
       agent,
       model: trimmedModel,
       codexModel: codexModel.trim(),
+      codexReasoningEffort,
     };
 
     setSaveState("saving");
@@ -292,6 +308,38 @@ export default function SettingsPage() {
                   <p className="mt-3 text-xs leading-5 text-gray-500">
                     Passed to <span className="font-mono">codex exec --model</span>.
                     The default is <span className="font-mono">{DEFAULT_CODEX_MODEL}</span>.
+                  </p>
+
+                  <label
+                    htmlFor="codex-reasoning-effort"
+                    className="mt-5 block text-sm font-medium text-gray-300"
+                  >
+                    Reasoning effort
+                  </label>
+                  <select
+                    id="codex-reasoning-effort"
+                    value={codexReasoningEffort}
+                    onChange={(event) => {
+                      setCodexReasoningEffort(event.target.value);
+                      markDirty();
+                    }}
+                    className="mt-2 w-full rounded-lg border border-gray-700 bg-gray-900/70 px-3 py-2 font-mono text-sm text-gray-200 focus:border-blue-500 focus:outline-none"
+                  >
+                    <option value={DEFAULT_CODEX_REASONING_EFFORT}>
+                      Codex default
+                    </option>
+                    {knownCodexReasoningEfforts.map((effort) => (
+                      <option key={effort} value={effort}>
+                        {effort}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-3 text-xs leading-5 text-gray-500">
+                    Passed to Codex as{" "}
+                    <span className="font-mono">
+                      -c model_reasoning_effort=&lt;value&gt;
+                    </span>
+                    .
                   </p>
                 </div>
               )}

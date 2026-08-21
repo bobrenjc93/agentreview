@@ -82,11 +82,14 @@ KNOWN_AGENT_MODELS = [
 # Curated codex model ids; empty string means codex's own default model.
 DEFAULT_CODEX_MODEL = "gpt-5.5"
 KNOWN_CODEX_MODELS = [
+    "gpt-5.6-sol",
     "gpt-5.5",
     "gpt-5.5-codex",
     "gpt-5.5-codex-mini",
     "gpt-5.1-codex-max",
 ]
+DEFAULT_CODEX_REASONING_EFFORT = ""
+KNOWN_CODEX_REASONING_EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"]
 LOCAL_FALLBACK_SEGMENT_ID = "all-changes"
 LOCAL_CACHE_BUSTER_QUERY_KEY = "agentreviewSession"
 ProgressReporter = Callable[[str], None]
@@ -150,6 +153,15 @@ def get_default_codex_model() -> str:
     if isinstance(saved_model, str) and saved_model.strip():
         return saved_model.strip()
     return DEFAULT_CODEX_MODEL
+
+
+def get_default_codex_reasoning_effort() -> str:
+    saved_effort = load_persisted_settings().get("codexReasoningEffort")
+    if isinstance(saved_effort, str):
+        normalized_effort = saved_effort.strip().lower()
+        if normalized_effort in KNOWN_CODEX_REASONING_EFFORTS:
+            return normalized_effort
+    return DEFAULT_CODEX_REASONING_EFFORT
 
 
 def _truncate_tool_detail(detail: str) -> str:
@@ -492,6 +504,7 @@ def _parse_codex_stream(stdout: str) -> tuple[list[dict], str | None, str | None
 def _stream_codex_agent(
     prompt: str,
     model: str,
+    reasoning_effort: str = DEFAULT_CODEX_REASONING_EFFORT,
     on_spawn: Callable[[subprocess.Popen], None] | None = None,
 ) -> "Iterator[dict]":
     """Yields {"type": "segment", ...} events as they arrive, then one {"type": "done", ...}."""
@@ -506,6 +519,8 @@ def _stream_codex_agent(
     command = [codex, "exec", "--json", "--yolo"]
     if model:
         command += ["--model", model]
+    if reasoning_effort:
+        command += ["-c", f"model_reasoning_effort={reasoning_effort}"]
     command += shlex.split(os.environ.get(CODEX_EXTRA_ARGS_ENV, ""))
     command.append(prompt)
 
@@ -570,8 +585,12 @@ def _run_claude_agent(prompt: str, model: str) -> dict:
     return _drain_agent_stream(_stream_claude_agent(prompt, model))
 
 
-def _run_codex_agent(prompt: str, model: str) -> dict:
-    return _drain_agent_stream(_stream_codex_agent(prompt, model))
+def _run_codex_agent(
+    prompt: str,
+    model: str,
+    reasoning_effort: str = DEFAULT_CODEX_REASONING_EFFORT,
+) -> dict:
+    return _drain_agent_stream(_stream_codex_agent(prompt, model, reasoning_effort))
 
 
 def _report_progress(progress: ProgressReporter | None, message: str) -> None:
@@ -609,6 +628,7 @@ class _LocalReviewSessionState:
     agent_backend: str = DEFAULT_AGENT_BACKEND
     agent_model: str = DEFAULT_AGENT_MODEL
     codex_model: str = DEFAULT_CODEX_MODEL
+    codex_reasoning_effort: str = DEFAULT_CODEX_REASONING_EFFORT
     _file_response_cache_by_key: dict[LocalFileKey, bytes] = field(default_factory=dict)
     _lock: Lock = field(default_factory=Lock)
     _agent_procs_by_run_key: dict[str, subprocess.Popen] = field(default_factory=dict)
@@ -676,15 +696,26 @@ class _LocalReviewSessionState:
                     _kill_agent_process(proc)
                 self._agent_procs_by_run_key[run_key] = proc
 
-        backend, claude_model, codex_model = self.get_agent_config()
+        backend, claude_model, codex_model, codex_reasoning_effort = self.get_agent_config()
         if backend == "codex":
+            reasoning_detail = (
+                f" with reasoning effort {codex_reasoning_effort}"
+                if codex_reasoning_effort
+                else ""
+            )
             _report_progress(
                 self.progress,
-                f"{run_tag} Running codex exec with model {codex_model or 'codex default'}.",
+                f"{run_tag} Running codex exec with model "
+                f"{codex_model or 'codex default'}{reasoning_detail}.",
             )
             # codex exec resume is not wired up yet; replies fall back to a
             # fresh run with the conversation embedded in the prompt.
-            stream = _stream_codex_agent(prompt, codex_model, register_proc)
+            stream = _stream_codex_agent(
+                prompt,
+                codex_model,
+                codex_reasoning_effort,
+                register_proc,
+            )
         else:
             _report_progress(
                 self.progress,
@@ -738,22 +769,30 @@ class _LocalReviewSessionState:
     def run_agent(self, prompt: str) -> dict:
         return _drain_agent_stream(self.stream_agent(prompt))
 
-    def get_agent_config(self) -> tuple[str, str, str]:
+    def get_agent_config(self) -> tuple[str, str, str, str]:
         with self._lock:
-            return self.agent_backend, self.agent_model, self.codex_model
+            return (
+                self.agent_backend,
+                self.agent_model,
+                self.codex_model,
+                self.codex_reasoning_effort,
+            )
 
     def get_settings(self) -> dict:
-        backend, claude_model, codex_model = self.get_agent_config()
+        backend, claude_model, codex_model, codex_reasoning_effort = self.get_agent_config()
         return {
             "agent": backend,
             "model": claude_model,
             "codexModel": codex_model,
+            "codexReasoningEffort": codex_reasoning_effort,
             "defaultAgent": DEFAULT_AGENT_BACKEND,
             "defaultModel": DEFAULT_AGENT_MODEL,
             "defaultCodexModel": DEFAULT_CODEX_MODEL,
+            "defaultCodexReasoningEffort": DEFAULT_CODEX_REASONING_EFFORT,
             "knownAgents": list(KNOWN_AGENT_BACKENDS),
             "knownModels": KNOWN_AGENT_MODELS,
             "knownCodexModels": KNOWN_CODEX_MODELS,
+            "knownCodexReasoningEfforts": KNOWN_CODEX_REASONING_EFFORTS,
         }
 
     def update_settings(self, settings: dict) -> dict:
@@ -773,18 +812,35 @@ class _LocalReviewSessionState:
         if not isinstance(codex_model, str):
             raise LocalUiError("Settings codexModel must be a string.")
 
+        codex_reasoning_effort = settings.get("codexReasoningEffort", "")
+        if codex_reasoning_effort is None:
+            codex_reasoning_effort = ""
+        if not isinstance(codex_reasoning_effort, str):
+            raise LocalUiError("Settings codexReasoningEffort must be a string.")
+
         normalized_model = model.strip()
         normalized_backend = backend.strip().lower()
         normalized_codex_model = codex_model.strip() or DEFAULT_CODEX_MODEL
+        normalized_codex_reasoning_effort = codex_reasoning_effort.strip().lower()
+        if (
+            normalized_codex_reasoning_effort
+            and normalized_codex_reasoning_effort not in KNOWN_CODEX_REASONING_EFFORTS
+        ):
+            raise LocalUiError(
+                "Settings codexReasoningEffort must be one of: "
+                f"{', '.join(KNOWN_CODEX_REASONING_EFFORTS)}."
+            )
         with self._lock:
             self.agent_backend = normalized_backend
             self.agent_model = normalized_model
             self.codex_model = normalized_codex_model
+            self.codex_reasoning_effort = normalized_codex_reasoning_effort
 
         persisted = load_persisted_settings()
         persisted["agent"] = normalized_backend
         persisted["model"] = normalized_model
         persisted["codexModel"] = normalized_codex_model
+        persisted["codexReasoningEffort"] = normalized_codex_reasoning_effort
         try:
             save_persisted_settings(persisted)
         except OSError as exc:
@@ -1222,6 +1278,7 @@ def _serve_static_site(
         agent_backend=get_default_agent_backend(),
         agent_model=(agent_model or "").strip() or get_default_agent_model(),
         codex_model=get_default_codex_model(),
+        codex_reasoning_effort=get_default_codex_reasoning_effort(),
     )
 
     handler = partial(

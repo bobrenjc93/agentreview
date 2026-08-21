@@ -17,6 +17,7 @@ from .local_ui import (
     get_default_agent_backend,
     get_default_agent_model,
     get_default_codex_model,
+    get_default_codex_reasoning_effort,
     serve_local_review,
 )
 from .payload.encode import encode_payload, write_payload
@@ -324,7 +325,16 @@ def main(
         resolved_backend = get_default_agent_backend()
         if resolved_backend == "codex":
             codex_model = get_default_codex_model()
-            report_local_progress(f"Inline comments will run codex exec with model {codex_model}.")
+            codex_reasoning_effort = get_default_codex_reasoning_effort()
+            reasoning_detail = (
+                f" with reasoning effort {codex_reasoning_effort}"
+                if codex_reasoning_effort
+                else ""
+            )
+            report_local_progress(
+                f"Inline comments will run codex exec with model {codex_model}"
+                f"{reasoning_detail}."
+            )
         else:
             report_local_progress(f"Inline comments will run claude -p with model {resolved_agent_model}.")
         emit_verbose(verbose, "launching local review UI")

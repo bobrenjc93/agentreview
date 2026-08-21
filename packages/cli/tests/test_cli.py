@@ -20,6 +20,8 @@ from agentreview.git.metadata import get_metadata
 from agentreview.git.segments import get_review_segments
 from agentreview.local_ui import (
     DEFAULT_AGENT_MODEL,
+    DEFAULT_CODEX_REASONING_EFFORT,
+    KNOWN_CODEX_MODELS,
     LOCAL_FALLBACK_SEGMENT_ID,
     LOCAL_UI_BASE_URL_ENV,
     LOCAL_SERVER_START_PORT,
@@ -32,6 +34,7 @@ from agentreview.local_ui import (
     _run_codex_agent,
     get_default_agent_backend,
     get_default_agent_model,
+    get_default_codex_reasoning_effort,
     load_persisted_settings,
     save_persisted_settings,
     _build_local_payload_manifest,
@@ -1701,7 +1704,7 @@ class LocalAgentTests(unittest.TestCase):
                 self.assertEqual(settings["agent"], "claude")
                 self.assertEqual(
                     session_state.get_agent_config(),
-                    ("claude", "claude-fable-5", "gpt-5.5"),
+                    ("claude", "claude-fable-5", "gpt-5.5", ""),
                 )
                 self.assertEqual(
                     load_persisted_settings().get("model"), "claude-fable-5"
@@ -1720,19 +1723,22 @@ class LocalAgentTests(unittest.TestCase):
                     {
                         "agent": "codex",
                         "model": "claude-opus-4-8",
-                        "codexModel": "gpt-5.5-codex",
+                        "codexModel": "gpt-5.6-sol",
+                        "codexReasoningEffort": "max",
                     }
                 )
 
                 self.assertEqual(settings["agent"], "codex")
-                self.assertEqual(settings["codexModel"], "gpt-5.5-codex")
+                self.assertEqual(settings["codexModel"], "gpt-5.6-sol")
+                self.assertEqual(settings["codexReasoningEffort"], "max")
                 self.assertEqual(
                     session_state.get_agent_config(),
-                    ("codex", "claude-opus-4-8", "gpt-5.5-codex"),
+                    ("codex", "claude-opus-4-8", "gpt-5.6-sol", "max"),
                 )
                 persisted = load_persisted_settings()
                 self.assertEqual(persisted.get("agent"), "codex")
-                self.assertEqual(persisted.get("codexModel"), "gpt-5.5-codex")
+                self.assertEqual(persisted.get("codexModel"), "gpt-5.6-sol")
+                self.assertEqual(persisted.get("codexReasoningEffort"), "max")
 
     def test_session_state_update_settings_rejects_unknown_agent(self) -> None:
         session_state = _LocalReviewSessionState(
@@ -1757,13 +1763,17 @@ class LocalAgentTests(unittest.TestCase):
             payload_response=b"{}",
             file_by_key={},
             agent_backend="codex",
-            codex_model="gpt-5.5-codex",
+            codex_model="gpt-5.6-sol",
+            codex_reasoning_effort="max",
         )
 
         result = session_state.run_agent("hello")
 
         stream_codex_mock.assert_called_once()
-        self.assertEqual(stream_codex_mock.call_args.args[:2], ("hello", "gpt-5.5-codex"))
+        self.assertEqual(
+            stream_codex_mock.call_args.args[:3],
+            ("hello", "gpt-5.6-sol", "max"),
+        )
         stream_claude_mock.assert_not_called()
         self.assertEqual(result["response"], "from codex")
 
@@ -1856,14 +1866,18 @@ class LocalAgentTests(unittest.TestCase):
         )
         popen_mock.return_value = _FakeAgentProcess(stream + "\n")
 
-        result = _run_codex_agent("is this ok?", "gpt-5.5-codex")
+        result = _run_codex_agent("is this ok?", "gpt-5.6-sol", "max")
 
         command = popen_mock.call_args.args[0]
         self.assertEqual(command[1:4], ["exec", "--json", "--yolo"])
-        self.assertEqual(command[command.index("--model") + 1], "gpt-5.5-codex")
+        self.assertEqual(command[command.index("--model") + 1], "gpt-5.6-sol")
+        self.assertEqual(
+            command[command.index("-c") + 1],
+            "model_reasoning_effort=max",
+        )
         self.assertEqual(command[-1], "is this ok?")
         self.assertEqual(result["response"], "Looks fine.")
-        self.assertEqual(result["model"], "gpt-5.5-codex")
+        self.assertEqual(result["model"], "gpt-5.6-sol")
         self.assertEqual(result["sessionId"], "thread-1")
 
     @patch("agentreview.local_ui.shutil.which", return_value=None)
@@ -1974,6 +1988,7 @@ class LocalAgentTests(unittest.TestCase):
 
         self.assertEqual(DEFAULT_CODEX_MODEL, "gpt-5.5")
         self.assertEqual(get_default_codex_model(), "gpt-5.5")
+        self.assertIn("gpt-5.6-sol", KNOWN_CODEX_MODELS)
 
     @patch(
         "agentreview.local_ui.load_persisted_settings",
@@ -1983,6 +1998,43 @@ class LocalAgentTests(unittest.TestCase):
         from agentreview.local_ui import get_default_codex_model
 
         self.assertEqual(get_default_codex_model(), "gpt-5.5-codex-mini")
+
+    @patch(
+        "agentreview.local_ui.load_persisted_settings",
+        return_value={"codexReasoningEffort": "max"},
+    )
+    def test_default_codex_reasoning_effort_reads_persisted_settings(
+        self,
+        load_settings_mock,
+    ) -> None:
+        self.assertEqual(get_default_codex_reasoning_effort(), "max")
+
+    @patch("agentreview.local_ui.load_persisted_settings", return_value={})
+    def test_default_codex_reasoning_effort_uses_codex_default(
+        self,
+        load_settings_mock,
+    ) -> None:
+        self.assertEqual(
+            get_default_codex_reasoning_effort(),
+            DEFAULT_CODEX_REASONING_EFFORT,
+        )
+
+    def test_session_state_update_settings_rejects_unknown_codex_reasoning_effort(
+        self,
+    ) -> None:
+        session_state = _LocalReviewSessionState(
+            session_id="local-test",
+            payload_response=b"{}",
+            file_by_key={},
+        )
+
+        with self.assertRaises(LocalUiError):
+            session_state.update_settings(
+                {
+                    "model": "claude-opus-4-8",
+                    "codexReasoningEffort": "extreme",
+                }
+            )
 
     def test_session_state_update_settings_rejects_empty_model(self) -> None:
         session_state = _LocalReviewSessionState(
