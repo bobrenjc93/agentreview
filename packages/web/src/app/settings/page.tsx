@@ -67,6 +67,23 @@ function ModelChips({
   );
 }
 
+function returnFromSettings() {
+  try {
+    const referrer = new URL(document.referrer);
+    const cameFromReview =
+      referrer.origin === window.location.origin &&
+      (referrer.pathname.endsWith("/review") ||
+        referrer.pathname.endsWith("/review/local"));
+    if (cameFromReview) {
+      window.history.back();
+      return;
+    }
+  } catch {
+    // Direct visits have no usable referrer and fall back to the home page.
+  }
+  window.location.assign("/");
+}
+
 export default function SettingsPage() {
   const [agent, setAgent] = useState<AgentBackend>(DEFAULT_AGENT_BACKEND);
   const [model, setModel] = useState(DEFAULT_AGENT_MODEL);
@@ -169,12 +186,13 @@ export default function SettingsPage() {
       <div className="mx-auto w-full max-w-2xl px-6 py-12">
         <div className="mb-8 flex items-center justify-between">
           <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
-          <a
-            href="/"
+          <button
+            type="button"
+            onClick={returnFromSettings}
             className="text-sm text-blue-400 transition-colors hover:text-blue-300"
           >
             ← Back
-          </a>
+          </button>
         </div>
 
         <section className="home-panel rounded-2xl p-6">
