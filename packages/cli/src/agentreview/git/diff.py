@@ -5,7 +5,7 @@ import os
 import subprocess
 from typing import Literal
 
-from ..vcs import Repository, run_command
+from ..vcs import Repository, normalize_revision, run_command
 
 
 def _run_git(
@@ -129,6 +129,7 @@ def _get_sl_diff(
     *,
     include_uncommitted: bool,
 ) -> str:
+    base_ref = normalize_revision(repo, base_ref)
     match mode:
         case "staged":
             raise ValueError("--staged is only available in Git repositories.")

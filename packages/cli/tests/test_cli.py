@@ -243,6 +243,21 @@ class GetDiffTests(unittest.TestCase):
         run_sl.assert_called_once_with(repo, ["diff", "--git", "-r", "abc123"])
         get_untracked.assert_called_once_with(repo)
 
+    @patch(
+        "agentreview.git.diff._get_untracked_files_diff",
+        return_value="",
+    )
+    @patch("agentreview.git.diff._run_sl")
+    def test_sl_commit_mode_translates_git_head_syntax(self, run_sl, get_untracked) -> None:
+        repo = Repository(kind="sl", root="/repo")
+        run_sl.return_value = _completed("diff --git a/app.py b/app.py\n", args=["sl"])
+
+        diff = get_diff(repo, "commit", "HEAD~4", include_uncommitted=True)
+
+        self.assertEqual(diff, "diff --git a/app.py b/app.py\n")
+        run_sl.assert_called_once_with(repo, ["diff", "--git", "-r", ".~4"])
+        get_untracked.assert_called_once_with(repo)
+
 
 class HelpTextTests(unittest.TestCase):
     def test_help_includes_examples_and_common_use_cases(self) -> None:
@@ -477,6 +492,33 @@ class GetFileContentsTests(unittest.TestCase):
         self.assertEqual(len(files), 1)
         self.assertEqual(files[0].source, "clean head\n")
         self.assertEqual(files[0].old_source, "old from base\n")
+
+    @patch("agentreview.git.files.run_command")
+    def test_sl_commit_mode_translates_git_head_syntax_for_old_source(self, run_command) -> None:
+        with TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "app.py").write_text("new from worktree\n", encoding="utf-8")
+            repo = Repository(kind="sl", root=tmpdir)
+            run_command.return_value = _completed("old from base\n", args=["sl"])
+
+            files = get_file_contents(
+                repo,
+                "diff --git a/app.py b/app.py\n"
+                "--- a/app.py\n"
+                "+++ b/app.py\n",
+                "commit",
+                "HEAD~4",
+                include_uncommitted=True,
+            )
+
+        self.assertEqual(len(files), 1)
+        self.assertEqual(files[0].source, "new from worktree\n")
+        self.assertEqual(files[0].old_source, "old from base\n")
+        run_command.assert_called_once_with(
+            "sl",
+            repo,
+            ["cat", "-r", ".~4", "app.py"],
+            check=False,
+        )
 
 
 class RunCommandTests(unittest.TestCase):

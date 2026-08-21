@@ -5,7 +5,7 @@ import re
 from typing import Literal
 
 from ..payload.types import AgentReviewFile
-from ..vcs import Repository, run_command
+from ..vcs import Repository, normalize_revision, run_command
 
 DiffMode = Literal["default", "staged", "branch", "commit"]
 NewSourceMode = Literal["worktree", "index", "revision"]
@@ -131,6 +131,7 @@ def _sl_resolve_node(repo: Repository, revision: str) -> str:
 
 
 def _sl_base_revision(repo: Repository, diff_mode: DiffMode, base_ref: str) -> str:
+    base_ref = normalize_revision(repo, base_ref)
     if diff_mode == "branch":
         base_node = _sl_resolve_node(repo, base_ref)
         return _sl_resolve_node(repo, f"ancestor(., {base_node})")

@@ -24,6 +24,13 @@ class Repository:
     verbose: bool = False
 
 
+def normalize_revision(repo: Repository, revision: str) -> str:
+    """Translate common Git HEAD syntax to Sapling's working parent syntax."""
+    if repo.kind == "sl" and (revision == "HEAD" or revision.startswith(("HEAD~", "HEAD^"))):
+        return f".{revision[4:]}"
+    return revision
+
+
 def emit_verbose(enabled: bool, message: str) -> None:
     if enabled:
         timestamp = datetime.now().astimezone().isoformat(timespec="milliseconds")
