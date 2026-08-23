@@ -40,7 +40,7 @@ export function FileList({ files, selectedFile, onSelectFile }: FileListProps) {
             onClick={() => onSelectFile(file.path)}
             className={`flex items-center gap-2 px-3 py-1.5 text-left text-sm rounded-md transition-colors ${
               isSelected
-                ? "bg-gray-700 text-white"
+                ? "bg-cyan-500/15 text-cyan-100"
                 : "text-gray-300 hover:bg-gray-800"
             }`}
           >

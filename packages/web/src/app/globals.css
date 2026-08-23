@@ -95,6 +95,14 @@ body {
   scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
 }
 
+.shiki-token {
+  color: var(--shiki-dark);
+}
+
+html[data-theme="light"] .shiki-token {
+  color: var(--shiki-light);
+}
+
 code,
 pre,
 textarea {
@@ -729,11 +737,6 @@ html[data-theme="light"] .border-teal-400\/20 {
 
 html[data-theme="light"] .border-red-500\/40 {
   border-color: rgba(220, 38, 38, 0.35);
-}
-
-html[data-theme="light"] .review-shell .bg-gray-700.text-white {
-  background-color: #0f172a;
-  color: #f8fafc;
 }
 
 html[data-theme="light"] .review-shell .bg-gray-800.text-white,

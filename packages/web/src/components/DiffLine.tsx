@@ -4,6 +4,7 @@ import { type PointerEvent } from "react";
 import { type ParsedChange } from "@/lib/diff/parser";
 import { type ThemedToken } from "@/hooks/useHighlighter";
 import { type ReviewCommentSide } from "@/lib/comments/types";
+import { getTokenStyle } from "@/lib/highlighting";
 
 interface DiffLineProps {
   rowKey: string;
@@ -82,7 +83,7 @@ export function DiffLine({
         type="button"
         onPointerDown={handlePointerDown}
         onPointerEnter={() => onExtendLineSelection(rowKey)}
-        className={`w-10 text-right px-1 select-none shrink-0 cursor-pointer transition-colors ${
+        className={`w-10 text-right px-1 select-none shrink-0 cursor-pointer ${
           lineSelected
             ? "bg-blue-500/20 text-blue-200"
             : lineHighlighted
@@ -133,7 +134,9 @@ export function DiffLine({
       <span className="flex-1 whitespace-pre px-2">
         {tokens ? (
           tokens.map((token, i) => (
-            <span key={i} style={{ color: token.color }}>{token.content}</span>
+            <span key={i} className="shiki-token" style={getTokenStyle(token)}>
+              {token.content}
+            </span>
           ))
         ) : (
           <span className={fallbackTextClass}>{content}</span>

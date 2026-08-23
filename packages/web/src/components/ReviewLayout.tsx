@@ -1610,7 +1610,7 @@ export function ReviewLayout({
                 className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-all duration-200 ${
                   fullDiffCopied
                     ? "bg-cyan-500/15 text-cyan-100 shadow-[0_0_0_1px_rgba(34,211,238,0.35)]"
-                    : "bg-gray-700 text-white hover:bg-gray-600"
+                    : "border border-gray-700 bg-gray-800/80 text-gray-200 hover:bg-gray-700 hover:text-white"
                 }`}
                 title="Copy the full review diff to the clipboard"
               >
@@ -1891,7 +1891,7 @@ export function ReviewLayout({
                 {selectedSegment && (
                   <section className="rounded-xl border border-gray-800 bg-gray-950/70 p-4">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                      <div className="min-w-0">
+                      <div className="min-w-0 flex-1">
                         <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-gray-500">
                           {selectedSegment.kind === "commit" ? "Commit" : "Review Segment"}
                         </p>
@@ -1901,53 +1901,8 @@ export function ReviewLayout({
                         <p className="mt-1 text-sm text-gray-400">
                           {getSegmentPanelSubtitle(selectedSegment)}
                         </p>
-                        {selectedSegment.kind === "commit" && selectedSegment.commitMessage && (
-                          <div className="mt-3">
-                            <div className="mb-2 flex items-center justify-between gap-3">
-                              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">
-                                Commit message
-                              </p>
-                              <div
-                                className="inline-flex rounded-md border border-gray-700 bg-gray-900/80 p-0.5"
-                                aria-label="Commit message view"
-                              >
-                                <button
-                                  type="button"
-                                  onClick={() => setCommitMessageViewMode("plain")}
-                                  className={`rounded px-2 py-1 text-[11px] font-medium transition-colors ${
-                                    commitMessageViewMode === "plain"
-                                      ? "bg-gray-700 text-white"
-                                      : "text-gray-400 hover:text-white"
-                                  }`}
-                                  aria-pressed={commitMessageViewMode === "plain"}
-                                >
-                                  Plain
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setCommitMessageViewMode("markdown")}
-                                  className={`rounded px-2 py-1 text-[11px] font-medium transition-colors ${
-                                    commitMessageViewMode === "markdown"
-                                      ? "bg-cyan-500/15 text-cyan-100"
-                                      : "text-gray-400 hover:text-white"
-                                  }`}
-                                  aria-pressed={commitMessageViewMode === "markdown"}
-                                >
-                                  Markdown
-                                </button>
-                              </div>
-                            </div>
-                            {commitMessageViewMode === "markdown" ? (
-                              <AgentMarkdown text={selectedSegment.commitMessage} />
-                            ) : (
-                              <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-6 text-gray-300">
-                                {selectedSegment.commitMessage}
-                              </pre>
-                            )}
-                          </div>
-                        )}
                       </div>
-                      <div className="flex items-center gap-2 text-xs text-gray-500">
+                      <div className="flex shrink-0 items-center gap-2 whitespace-nowrap text-xs text-gray-500">
                         <span>
                           {visibleFiles.length} file{visibleFiles.length === 1 ? "" : "s"}
                         </span>
@@ -1958,6 +1913,51 @@ export function ReviewLayout({
                         </span>
                       </div>
                     </div>
+                    {selectedSegment.kind === "commit" && selectedSegment.commitMessage && (
+                      <div className="mt-4 border-t border-gray-800 pt-4">
+                        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">
+                            Commit message
+                          </p>
+                          <div
+                            className="inline-flex rounded-md border border-gray-700 bg-gray-900/80 p-0.5"
+                            aria-label="Commit message view"
+                          >
+                            <button
+                              type="button"
+                              onClick={() => setCommitMessageViewMode("plain")}
+                              className={`rounded px-2 py-1 text-[11px] font-medium transition-colors ${
+                                commitMessageViewMode === "plain"
+                                  ? "bg-cyan-500/15 text-cyan-100"
+                                  : "text-gray-400 hover:text-white"
+                              }`}
+                              aria-pressed={commitMessageViewMode === "plain"}
+                            >
+                              Plain
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setCommitMessageViewMode("markdown")}
+                              className={`rounded px-2 py-1 text-[11px] font-medium transition-colors ${
+                                commitMessageViewMode === "markdown"
+                                  ? "bg-cyan-500/15 text-cyan-100"
+                                  : "text-gray-400 hover:text-white"
+                              }`}
+                              aria-pressed={commitMessageViewMode === "markdown"}
+                            >
+                              Markdown
+                            </button>
+                          </div>
+                        </div>
+                        {commitMessageViewMode === "markdown" ? (
+                          <AgentMarkdown text={selectedSegment.commitMessage} />
+                        ) : (
+                          <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-6 text-gray-300">
+                            {selectedSegment.commitMessage}
+                          </pre>
+                        )}
+                      </div>
+                    )}
                     <div className="mt-4 rounded-xl border border-gray-800 bg-gray-900/60 p-3">
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                         <div>

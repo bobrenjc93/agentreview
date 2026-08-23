@@ -4,9 +4,14 @@ import {
   type Highlighter,
   type ThemedToken,
 } from "shiki";
+import { type CSSProperties } from "react";
 
 const HIGHLIGHT_CHUNK_LINE_COUNT = 500;
 const TOKENIZE_MAX_LINE_LENGTH = 20_000;
+const SHIKI_THEMES = {
+  light: "github-light",
+  dark: "github-dark",
+} as const;
 
 export type HighlightedTokenLine = ThemedToken[] | undefined;
 
@@ -33,8 +38,7 @@ function appendMissingLines(
 export function highlightCodeLines(
   highlighter: Highlighter | null,
   code: string,
-  language: string | undefined,
-  shikiTheme: string
+  language: string | undefined
 ): HighlightedTokenLine[] | null {
   if (!highlighter || !canHighlightLanguage(highlighter, language)) {
     return null;
@@ -51,7 +55,8 @@ export function highlightCodeLines(
     try {
       const result = highlighter.codeToTokens(chunkLines.join("\n"), {
         lang: language,
-        theme: shikiTheme,
+        themes: SHIKI_THEMES,
+        defaultColor: false,
         grammarState,
         tokenizeMaxLineLength: TOKENIZE_MAX_LINE_LENGTH,
       });
@@ -66,4 +71,12 @@ export function highlightCodeLines(
   }
 
   return tokenLines;
+}
+
+export function getTokenStyle(token: ThemedToken): CSSProperties | undefined {
+  if (token.htmlStyle && typeof token.htmlStyle === "object") {
+    return token.htmlStyle as CSSProperties;
+  }
+
+  return token.color ? { color: token.color } : undefined;
 }

@@ -3,8 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useHighlighter } from "@/hooks/useHighlighter";
 import { buildFoldRanges } from "@/lib/folding";
-import { highlightCodeLines } from "@/lib/highlighting";
-import { useTheme } from "./ThemeProvider";
+import { getTokenStyle, highlightCodeLines } from "@/lib/highlighting";
 
 interface CodeBlockProps {
   code: string;
@@ -13,7 +12,6 @@ interface CodeBlockProps {
 
 export function CodeBlock({ code, language }: CodeBlockProps) {
   const highlighter = useHighlighter();
-  const { theme } = useTheme();
   const lines = useMemo(() => code.split("\n"), [code]);
   const foldRanges = useMemo(() => buildFoldRanges(lines, language), [lines, language]);
   const foldStarts = useMemo(() => foldRanges.map((range) => range.start), [foldRanges]);
@@ -22,11 +20,10 @@ export function CodeBlock({ code, language }: CodeBlockProps) {
     [foldRanges]
   );
   const [collapsedStarts, setCollapsedStarts] = useState<Set<number>>(new Set());
-  const shikiTheme = theme === "light" ? "github-light" : "github-dark";
 
   const tokenLines = useMemo(() => {
-    return highlightCodeLines(highlighter, code, language, shikiTheme);
-  }, [highlighter, code, language, shikiTheme]);
+    return highlightCodeLines(highlighter, code, language);
+  }, [highlighter, code, language]);
 
   useEffect(() => {
     setCollapsedStarts(new Set());
@@ -105,7 +102,8 @@ export function CodeBlock({ code, language }: CodeBlockProps) {
             ? tokens.map((token, tokenIndex) => (
                 <span
                   key={`${rowIndex}-${tokenIndex}`}
-                  style={token.color ? { color: token.color } : undefined}
+                  className="shiki-token"
+                  style={getTokenStyle(token)}
                 >
                   {token.content}
                 </span>

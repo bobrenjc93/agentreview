@@ -15,11 +15,11 @@ import { buildFoldRanges, type FoldRange } from "@/lib/folding";
 import { DiffLine } from "./DiffLine";
 import { InlineCommentForm } from "./InlineCommentForm";
 import { InlineComment } from "./InlineComment";
-import { useTheme } from "./ThemeProvider";
 import { useComments } from "@/hooks/useComments";
 import { useHighlighter, type ThemedToken } from "@/hooks/useHighlighter";
 import {
   canHighlightLanguage,
+  getTokenStyle,
   highlightCodeLines,
 } from "@/lib/highlighting";
 import {
@@ -128,8 +128,6 @@ interface DeferredRenderBlockProps {
 }
 
 const CONTEXT_EXPAND_STEP = 20;
-const DARK_SHIKI_THEME = "github-dark";
-const LIGHT_SHIKI_THEME = "github-light";
 const DIFF_RENDER_BATCH_SIZE = 120;
 const DIFF_RENDER_BATCH_THRESHOLD = 240;
 const DIFF_RENDER_BATCH_ROOT_MARGIN = "1400px 0px";
@@ -202,11 +200,10 @@ function getChangeNewLineNumber(change: ParsedChange): number | null {
 function buildTokenLineMap(
   highlighter: ReturnType<typeof useHighlighter>,
   code: string | undefined,
-  language: string | undefined,
-  shikiTheme: string
+  language: string | undefined
 ): Map<number, ThemedToken[]> | null {
   if (code == null) return null;
-  const tokenLines = highlightCodeLines(highlighter, code, language, shikiTheme);
+  const tokenLines = highlightCodeLines(highlighter, code, language);
   if (!tokenLines) return null;
 
   const map = new Map<number, ThemedToken[]>();
@@ -651,12 +648,11 @@ export function DiffView({
     getCommentsForLine,
   } = useComments();
   const highlighter = useHighlighter();
-  const { theme } = useTheme();
-  const shikiTheme =
-    theme === "light" ? LIGHT_SHIKI_THEME : DARK_SHIKI_THEME;
 
-  const parsed = parseDiffString(file.diff);
-  const chunks = parsed[0]?.chunks || [];
+  const chunks = useMemo(
+    () => parseDiffString(file.diff)[0]?.chunks ?? [],
+    [file.diff]
+  );
 
   const preparedChunks = useMemo<PreparedChunk[]>(() => {
     let tokenIndex = 0;
@@ -750,9 +746,9 @@ export function DiffView({
   const newSourceTokenMap = useMemo(
     () =>
       shouldTokenizeSourceContext
-        ? buildTokenLineMap(highlighter, file.source, file.language, shikiTheme)
+        ? buildTokenLineMap(highlighter, file.source, file.language)
         : null,
-    [highlighter, file.source, file.language, shikiTheme, shouldTokenizeSourceContext]
+    [highlighter, file.source, file.language, shouldTokenizeSourceContext]
   );
 
   const oldSourceTokenMap = useMemo(
@@ -761,11 +757,10 @@ export function DiffView({
         ? buildTokenLineMap(
             highlighter,
             file.oldSource,
-            file.language,
-            shikiTheme
+            file.language
           )
         : null,
-    [highlighter, file.oldSource, file.language, shikiTheme, shouldTokenizeSourceContext]
+    [highlighter, file.oldSource, file.language, shouldTokenizeSourceContext]
   );
 
   const chunkLineRanges = useMemo(
@@ -990,8 +985,7 @@ export function DiffView({
     const tokenLines = highlightCodeLines(
       highlighter,
       fullText,
-      file.language,
-      shikiTheme
+      file.language
     );
     if (!tokenLines) return null;
 
@@ -1006,7 +1000,6 @@ export function DiffView({
     highlighter,
     file.language,
     preparedChunks,
-    shikiTheme,
     shouldTokenizeDiffFallback,
   ]);
 
@@ -1238,7 +1231,8 @@ export function DiffView({
             tokens.map((token, tokenIndex) => (
               <span
                 key={`${lineNumber}-${tokenIndex}`}
-                style={token.color ? { color: token.color } : undefined}
+                className="shiki-token"
+                style={getTokenStyle(token)}
               >
                 {token.content}
               </span>
@@ -1327,7 +1321,7 @@ export function DiffView({
   ) {
     if (tokens) {
       return tokens.map((token, index) => (
-        <span key={index} style={{ color: token.color }}>
+        <span key={index} className="shiki-token" style={getTokenStyle(token)}>
           {token.content}
         </span>
       ));
@@ -1359,7 +1353,7 @@ export function DiffView({
         type="button"
         onPointerDown={handlePointerDown}
         onPointerEnter={() => handleExtendLineSelection(rowKey)}
-        className={`w-12 shrink-0 px-2 text-right select-none transition-colors ${
+        className={`w-12 shrink-0 px-2 text-right select-none ${
           selected
             ? "bg-blue-500/20 text-blue-200"
             : highlighted
