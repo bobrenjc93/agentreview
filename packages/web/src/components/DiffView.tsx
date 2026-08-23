@@ -726,14 +726,6 @@ function DiffViewComponent({
     [oldSourceLineCount, sourceLines.length]
   );
 
-  const hasExpandedSourceContext = useMemo(
-    () =>
-      Object.values(expandedContextByGap).some(
-        (expanded) => expanded.up > 0 || expanded.down > 0
-      ),
-    [expandedContextByGap]
-  );
-
   const shouldTokenizeDiffFallback = useMemo(
     () => diffLineCount <= MAX_DIFF_TOKENIZED_LINES,
     [diffLineCount]
@@ -741,34 +733,22 @@ function DiffViewComponent({
 
   const newSourceTokenMap = useMemo(
     () =>
-      shouldTokenizeSourceContext && hasExpandedSourceContext
+      shouldTokenizeSourceContext
         ? buildTokenLineMap(highlighter, file.source, file.language)
         : null,
-    [
-      hasExpandedSourceContext,
-      highlighter,
-      file.source,
-      file.language,
-      shouldTokenizeSourceContext,
-    ]
+    [highlighter, file.source, file.language, shouldTokenizeSourceContext]
   );
 
   const oldSourceTokenMap = useMemo(
     () =>
-      shouldTokenizeSourceContext && hasExpandedSourceContext
+      shouldTokenizeSourceContext
         ? buildTokenLineMap(
             highlighter,
             file.oldSource,
             file.language
           )
         : null,
-    [
-      hasExpandedSourceContext,
-      highlighter,
-      file.oldSource,
-      file.language,
-      shouldTokenizeSourceContext,
-    ]
+    [highlighter, file.oldSource, file.language, shouldTokenizeSourceContext]
   );
 
   const chunkLineRanges = useMemo(
@@ -982,27 +962,22 @@ function DiffViewComponent({
     if (!shouldTokenizeDiffFallback) return null;
     if (!canHighlightLanguage(highlighter, file.language)) return null;
 
-    const lines: string[] = [];
-    for (const chunk of preparedChunks) {
-      for (const change of chunk.changes) {
-        lines.push(change.content);
-      }
-    }
-
-    const fullText = lines.join("\n");
-    const tokenLines = highlightCodeLines(
-      highlighter,
-      fullText,
-      file.language
-    );
-    if (!tokenLines) return null;
-
     const map = new Map<number, ThemedToken[]>();
-    tokenLines.forEach((lineTokens, index) => {
-      if (lineTokens) {
-        map.set(index, lineTokens);
-      }
-    });
+    for (const chunk of preparedChunks) {
+      const tokenLines = highlightCodeLines(
+        highlighter,
+        chunk.changes.map((change) => change.content).join("\n"),
+        file.language
+      );
+      if (!tokenLines) return null;
+
+      chunk.changes.forEach((change, index) => {
+        const lineTokens = tokenLines[index];
+        if (lineTokens) {
+          map.set(change.tokenIndex, lineTokens);
+        }
+      });
+    }
     return map;
   }, [
     highlighter,

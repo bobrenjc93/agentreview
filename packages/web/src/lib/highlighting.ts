@@ -35,6 +35,57 @@ function appendMissingLines(
   }
 }
 
+function tokenizeRange(
+  highlighter: Highlighter,
+  lines: string[],
+  start: number,
+  end: number,
+  language: BundledLanguage,
+  grammarState: GrammarState | undefined,
+  tokenLines: HighlightedTokenLine[]
+): GrammarState | undefined {
+  const expectedLength = tokenLines.length + end - start;
+
+  try {
+    const result = highlighter.codeToTokens(lines.slice(start, end).join("\n"), {
+      lang: language,
+      themes: SHIKI_THEMES,
+      defaultColor: false,
+      grammarState,
+      tokenizeMaxLineLength: TOKENIZE_MAX_LINE_LENGTH,
+    });
+
+    tokenLines.push(...result.tokens.slice(0, end - start));
+    appendMissingLines(tokenLines, expectedLength);
+    return result.grammarState;
+  } catch {
+    if (end - start <= 1) {
+      tokenLines.push(undefined);
+      return grammarState;
+    }
+
+    const middle = start + Math.floor((end - start) / 2);
+    const nextGrammarState = tokenizeRange(
+      highlighter,
+      lines,
+      start,
+      middle,
+      language,
+      grammarState,
+      tokenLines
+    );
+    return tokenizeRange(
+      highlighter,
+      lines,
+      middle,
+      end,
+      language,
+      nextGrammarState,
+      tokenLines
+    );
+  }
+}
+
 export function highlightCodeLines(
   highlighter: Highlighter | null,
   code: string,
@@ -49,25 +100,15 @@ export function highlightCodeLines(
   let grammarState: GrammarState | undefined;
 
   for (let start = 0; start < lines.length; start += HIGHLIGHT_CHUNK_LINE_COUNT) {
-    const chunkLines = lines.slice(start, start + HIGHLIGHT_CHUNK_LINE_COUNT);
-    const expectedLength = tokenLines.length + chunkLines.length;
-
-    try {
-      const result = highlighter.codeToTokens(chunkLines.join("\n"), {
-        lang: language,
-        themes: SHIKI_THEMES,
-        defaultColor: false,
-        grammarState,
-        tokenizeMaxLineLength: TOKENIZE_MAX_LINE_LENGTH,
-      });
-
-      tokenLines.push(...result.tokens.slice(0, chunkLines.length));
-      appendMissingLines(tokenLines, expectedLength);
-      grammarState = result.grammarState;
-    } catch {
-      appendMissingLines(tokenLines, expectedLength);
-      grammarState = undefined;
-    }
+    grammarState = tokenizeRange(
+      highlighter,
+      lines,
+      start,
+      Math.min(start + HIGHLIGHT_CHUNK_LINE_COUNT, lines.length),
+      language,
+      grammarState,
+      tokenLines
+    );
   }
 
   return tokenLines;
