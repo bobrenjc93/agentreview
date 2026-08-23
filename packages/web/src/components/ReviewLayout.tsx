@@ -28,7 +28,6 @@ import {
 } from "@/lib/comments/types";
 import { type CancelAgent, type RunAgent } from "@/lib/comments/agent";
 import { AgentActivityBubble } from "./AgentActivityBubble";
-import { AgentMarkdown } from "./AgentMarkdown";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { generateExportPrompt } from "@/lib/export/prompt";
 import { generateExportDiff } from "@/lib/export/diff";
@@ -40,6 +39,7 @@ import { DiffView } from "./DiffView";
 import { InlineComment } from "./InlineComment";
 import { InlineCommentForm } from "./InlineCommentForm";
 import { SidebarFileTree } from "./SidebarFileTree";
+import { CommitMessagePanel } from "./CommitMessagePanel";
 
 interface ReviewLayoutProps {
   payload: AgentReviewPayload;
@@ -62,7 +62,6 @@ interface SegmentContextMenuState {
 }
 
 type DiffViewMode = "unified" | "split";
-type CommitMessageViewMode = "plain" | "markdown";
 
 const STATUS_COLORS: Record<AgentReviewFile["status"], string> = {
   added: "text-green-400",
@@ -99,7 +98,6 @@ const SIDEBAR_SECTION_SPLITTER_HEIGHT = 12;
 const SIDEBAR_WIDTH_STORAGE_KEY = "agentreview:sidebarWidth";
 const SIDEBAR_SEGMENTS_HEIGHT_STORAGE_KEY = "agentreview:sidebarSegmentsHeight";
 const DIFF_VIEW_MODE_STORAGE_KEY = "agentreview:diffViewMode";
-const COMMIT_MESSAGE_VIEW_MODE_STORAGE_KEY = "agentreview:commitMessageViewMode";
 const EXPORT_COPY_RESET_MS = 1500;
 const ALL_COMMENTS_EXPORT_ID = "export-comments";
 const FULL_DIFF_EXPORT_ID = "export-diff";
@@ -297,12 +295,6 @@ function clampSidebarWidth(width: number): number {
 
 function isDiffViewMode(value: string | null): value is DiffViewMode {
   return value === "unified" || value === "split";
-}
-
-function isCommitMessageViewMode(
-  value: string | null
-): value is CommitMessageViewMode {
-  return value === "plain" || value === "markdown";
 }
 
 function mergeFileDetails(
@@ -525,8 +517,6 @@ export function ReviewLayout({
   );
   const [isResizingSidebarSections, setIsResizingSidebarSections] = useState(false);
   const [diffViewMode, setDiffViewMode] = useState<DiffViewMode>("unified");
-  const [commitMessageViewMode, setCommitMessageViewMode] =
-    useState<CommitMessageViewMode>("plain");
   const [preferencesLoaded, setPreferencesLoaded] = useState(false);
   const [expandedFiles, setExpandedFiles] = useState<Set<string>>(
     () => new Set(getAllFileIds(segments))
@@ -625,13 +615,6 @@ export function ReviewLayout({
       setDiffViewMode(savedDiffViewMode);
     }
 
-    const savedCommitMessageViewMode = window.localStorage.getItem(
-      COMMIT_MESSAGE_VIEW_MODE_STORAGE_KEY
-    );
-    if (isCommitMessageViewMode(savedCommitMessageViewMode)) {
-      setCommitMessageViewMode(savedCommitMessageViewMode);
-    }
-
     setPreferencesLoaded(true);
   }, [clampSegmentsPaneHeight]);
 
@@ -655,14 +638,6 @@ export function ReviewLayout({
     if (!preferencesLoaded || typeof window === "undefined") return;
     window.localStorage.setItem(DIFF_VIEW_MODE_STORAGE_KEY, diffViewMode);
   }, [preferencesLoaded, diffViewMode]);
-
-  useEffect(() => {
-    if (!preferencesLoaded || typeof window === "undefined") return;
-    window.localStorage.setItem(
-      COMMIT_MESSAGE_VIEW_MODE_STORAGE_KEY,
-      commitMessageViewMode
-    );
-  }, [commitMessageViewMode, preferencesLoaded]);
 
   useEffect(() => {
     expandedFilesRef.current = expandedFiles;
@@ -1914,49 +1889,7 @@ export function ReviewLayout({
                       </div>
                     </div>
                     {selectedSegment.kind === "commit" && selectedSegment.commitMessage && (
-                      <div className="mt-4 border-t border-gray-800 pt-4">
-                        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-                          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">
-                            Commit message
-                          </p>
-                          <div
-                            className="inline-flex rounded-md border border-gray-700 bg-gray-900/80 p-0.5"
-                            aria-label="Commit message view"
-                          >
-                            <button
-                              type="button"
-                              onClick={() => setCommitMessageViewMode("plain")}
-                              className={`rounded px-2 py-1 text-[11px] font-medium transition-colors ${
-                                commitMessageViewMode === "plain"
-                                  ? "bg-cyan-500/15 text-cyan-100"
-                                  : "text-gray-400 hover:text-white"
-                              }`}
-                              aria-pressed={commitMessageViewMode === "plain"}
-                            >
-                              Plain
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setCommitMessageViewMode("markdown")}
-                              className={`rounded px-2 py-1 text-[11px] font-medium transition-colors ${
-                                commitMessageViewMode === "markdown"
-                                  ? "bg-cyan-500/15 text-cyan-100"
-                                  : "text-gray-400 hover:text-white"
-                              }`}
-                              aria-pressed={commitMessageViewMode === "markdown"}
-                            >
-                              Markdown
-                            </button>
-                          </div>
-                        </div>
-                        {commitMessageViewMode === "markdown" ? (
-                          <AgentMarkdown text={selectedSegment.commitMessage} />
-                        ) : (
-                          <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-6 text-gray-300">
-                            {selectedSegment.commitMessage}
-                          </pre>
-                        )}
-                      </div>
+                      <CommitMessagePanel message={selectedSegment.commitMessage} />
                     )}
                     <div className="mt-4 rounded-xl border border-gray-800 bg-gray-900/60 p-3">
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
