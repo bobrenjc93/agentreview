@@ -1,6 +1,14 @@
 "use client";
 
-import { createContext, useContext, useState, useCallback, useEffect, useRef } from "react";
+import {
+  createContext,
+  useContext,
+  useState,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+} from "react";
 import {
   commentEndsOnLine,
   commentIncludesLine,
@@ -75,42 +83,45 @@ export function useCommentsProvider(
   useEffect(() => {
     // Agent runs from a previous page load can never resolve; surface them as errors.
     const interruptedError = "The agent run was interrupted before it finished.";
-    setComments(
-      loadComments(sessionId).map((comment) => {
-        let next = comment;
-        if (next.agentStatus === "pending") {
-          next = {
-            ...next,
-            agentStatus: "error" as const,
-            agentError: interruptedError,
-          };
-        }
-        if (next.agentRetryNote) {
-          next = { ...next, agentRetryNote: undefined };
-        }
-        if (
-          next.agentReplies?.some(
-            (exchange) => exchange.status === "pending" || exchange.retryNote
-          )
-        ) {
-          next = {
-            ...next,
-            agentReplies: next.agentReplies?.map((exchange) =>
-              exchange.status === "pending"
-                ? {
-                    ...exchange,
-                    status: "error" as const,
-                    error: interruptedError,
-                    retryNote: undefined,
-                  }
-                : exchange.retryNote
-                  ? { ...exchange, retryNote: undefined }
-                  : exchange
-            ),
-          };
-        }
-        return next;
-      })
+    const loadedComments = loadComments(sessionId).map((comment) => {
+      let next = comment;
+      if (next.agentStatus === "pending") {
+        next = {
+          ...next,
+          agentStatus: "error" as const,
+          agentError: interruptedError,
+        };
+      }
+      if (next.agentRetryNote) {
+        next = { ...next, agentRetryNote: undefined };
+      }
+      if (
+        next.agentReplies?.some(
+          (exchange) => exchange.status === "pending" || exchange.retryNote
+        )
+      ) {
+        next = {
+          ...next,
+          agentReplies: next.agentReplies?.map((exchange) =>
+            exchange.status === "pending"
+              ? {
+                  ...exchange,
+                  status: "error" as const,
+                  error: interruptedError,
+                  retryNote: undefined,
+                }
+              : exchange.retryNote
+                ? { ...exchange, retryNote: undefined }
+                : exchange
+          ),
+        };
+      }
+      return next;
+    });
+    setComments((current) =>
+      current.length === 0 && loadedComments.length === 0
+        ? current
+        : loadedComments
     );
     setLoadedSessionId(sessionId);
   }, [sessionId]);
@@ -521,23 +532,42 @@ export function useCommentsProvider(
     [comments]
   );
 
-  return {
-    comments,
-    addComment,
-    retryAgentReply,
-    askAgentFollowUp,
-    retryAgentFollowUp,
-    cancelAgentReply,
-    markAgentSeen,
-    setAgentExpanded,
-    updateComment,
-    removeComment,
-    removeComments,
-    clearComments: clearAll,
-    getCommentsForFile,
-    getCommentsForLine,
-    getCommentsEndingOnLine,
-  };
+  return useMemo(
+    () => ({
+      comments,
+      addComment,
+      retryAgentReply,
+      askAgentFollowUp,
+      retryAgentFollowUp,
+      cancelAgentReply,
+      markAgentSeen,
+      setAgentExpanded,
+      updateComment,
+      removeComment,
+      removeComments,
+      clearComments: clearAll,
+      getCommentsForFile,
+      getCommentsForLine,
+      getCommentsEndingOnLine,
+    }),
+    [
+      comments,
+      addComment,
+      retryAgentReply,
+      askAgentFollowUp,
+      retryAgentFollowUp,
+      cancelAgentReply,
+      markAgentSeen,
+      setAgentExpanded,
+      updateComment,
+      removeComment,
+      removeComments,
+      clearAll,
+      getCommentsForFile,
+      getCommentsForLine,
+      getCommentsEndingOnLine,
+    ]
+  );
 }
 
 export function useComments(): CommentsContextValue {

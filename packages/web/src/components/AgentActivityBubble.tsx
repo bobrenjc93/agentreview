@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import {
   type ReviewComment,
   formatReviewCommentRange,
@@ -34,7 +34,7 @@ function hasPendingAgentRun(comment: ReviewComment): boolean {
   );
 }
 
-export function AgentActivityBubble({
+export const AgentActivityBubble = memo(function AgentActivityBubble({
   comments,
   onNavigateToComment,
   onDismiss,
@@ -157,4 +157,4 @@ export function AgentActivityBubble({
       </button>
     </div>
   );
-}
+});

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import {
   type CommentAgentExchange,
   type CommentAgentSegment,
@@ -494,7 +494,7 @@ function AgentReplySection({
   );
 }
 
-export function InlineComment({
+export const InlineComment = memo(function InlineComment({
   comment,
   onEdit,
   onDelete,
@@ -588,4 +588,4 @@ export function InlineComment({
       />
     </div>
   );
-}
+});

@@ -102,17 +102,9 @@ const EXPORT_COPY_RESET_MS = 1500;
 const ALL_COMMENTS_EXPORT_ID = "export-comments";
 const FULL_DIFF_EXPORT_ID = "export-diff";
 const DEFERRED_DIFF_ROOT_MARGIN = "900px 0px";
-const DEFERRED_DIFF_STAGGER_MS = 80;
-const DEFERRED_DIFF_MAX_DELAY_MS = 2400;
-const BACKGROUND_FILE_DETAIL_CONCURRENCY = 4;
 const LARGE_DIFF_LINE_THRESHOLD = 1500;
 const LARGE_DIFF_CHAR_THRESHOLD = 120000;
 const APP_TITLE = "AgentReview";
-
-interface QueuedFileDetail {
-  segmentId: string;
-  file: AgentReviewFile;
-}
 
 interface DiffRenderStats {
   diffLineCount: number;
@@ -318,67 +310,18 @@ function requiresFileDetails(file: AgentReviewFile): boolean {
   return needsNewSource || needsOldSource;
 }
 
-function buildFileDetailPrefetchQueue(
-  segments: AgentReviewSegment[],
-  selectedSegmentId: string | null,
-  selectedFileId: string | null,
-  shouldEnqueueFile: (segmentId: string, file: AgentReviewFile) => boolean
-): QueuedFileDetail[] {
-  const queue: QueuedFileDetail[] = [];
-  const seen = new Set<string>();
-  const selectedSegment =
-    segments.find((segment) => segment.id === selectedSegmentId) ?? segments[0] ?? null;
-
-  function enqueue(segment: AgentReviewSegment, file: AgentReviewFile) {
-    const fileId = getSegmentFileId(segment.id, file.path);
-    if (!shouldEnqueueFile(segment.id, file)) {
-      return;
-    }
-    if (seen.has(fileId)) {
-      return;
-    }
-    seen.add(fileId);
-    queue.push({
-      segmentId: segment.id,
-      file,
-    });
-  }
-
-  if (selectedSegment) {
-    if (selectedFileId) {
-      const selectedFile = selectedSegment.files.find(
-        (file) => getSegmentFileId(selectedSegment.id, file.path) === selectedFileId
-      );
-      if (selectedFile) {
-        enqueue(selectedSegment, selectedFile);
-      }
-    }
-
-    selectedSegment.files.forEach((file) => enqueue(selectedSegment, file));
-  }
-
-  segments.forEach((segment) => {
-    if (segment.id === selectedSegment?.id) {
-      return;
-    }
-    segment.files.forEach((file) => enqueue(segment, file));
-  });
-
-  return queue;
-}
-
 interface DeferredDiffProps {
   children: ReactNode;
   fileId: string;
+  estimatedHeight: number;
   prioritize?: boolean;
-  eagerOrder?: number;
 }
 
 function DeferredDiff({
   children,
   fileId,
+  estimatedHeight,
   prioritize = false,
-  eagerOrder = 0,
 }: DeferredDiffProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [shouldRender, setShouldRender] = useState(prioritize);
@@ -403,14 +346,6 @@ function DeferredDiff({
       return;
     }
 
-    const eagerDelayMs = Math.min(
-      Math.max(0, eagerOrder) * DEFERRED_DIFF_STAGGER_MS,
-      DEFERRED_DIFF_MAX_DELAY_MS
-    );
-    const eagerTimer = window.setTimeout(() => {
-      setShouldRender(true);
-    }, eagerDelayMs);
-
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries.some((entry) => entry.isIntersecting)) {
@@ -423,17 +358,19 @@ function DeferredDiff({
 
     observer.observe(element);
     return () => {
-      window.clearTimeout(eagerTimer);
       observer.disconnect();
     };
-  }, [eagerOrder, fileId, prioritize, shouldRender]);
+  }, [fileId, prioritize, shouldRender]);
 
   return (
     <div ref={containerRef}>
       {shouldRender ? (
         children
       ) : (
-        <div className="border-t border-gray-800 bg-gray-950/60 px-4 py-5 text-sm text-gray-400">
+        <div
+          className="border-t border-gray-800 bg-gray-950/60 px-4 py-5 text-sm text-gray-400"
+          style={{ minHeight: `${Math.max(estimatedHeight, 96)}px` }}
+        >
           <div className="flex items-center gap-3">
             <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-cyan-400/70" />
             <span>Loading diff…</span>
@@ -668,7 +605,7 @@ export function ReviewLayout({
       return next;
     });
   }, []);
-  const shouldBackgroundPrefetchFileDetails = useCallback(
+  const shouldLoadSelectedFileDetails = useCallback(
     (segmentId: string, file: AgentReviewFile) => {
       const fileId = getSegmentFileId(segmentId, file.path);
       const stats = diffRenderStatsByFileId.get(fileId);
@@ -861,64 +798,28 @@ export function ReviewLayout({
   }
 
   useEffect(() => {
-    if (!loadFileDetails) {
+    if (!loadFileDetails || !selectedSegment || !selectedFileId) {
       return;
     }
 
-    const queue = buildFileDetailPrefetchQueue(
-      baseSegments,
-      selectedSegmentId,
-      selectedFileId,
-      shouldBackgroundPrefetchFileDetails
+    const selectedFile = selectedSegment.files.find(
+      (file) => getSegmentFileId(selectedSegment.id, file.path) === selectedFileId
     );
-    if (queue.length === 0) {
+    if (
+      !selectedFile ||
+      !shouldLoadSelectedFileDetails(selectedSegment.id, selectedFile) ||
+      !requiresFileDetails(selectedFile)
+    ) {
       return;
     }
 
-    let cancelled = false;
-    let nextIndex = 0;
-
-    async function worker() {
-      while (!cancelled) {
-        const currentIndex = nextIndex;
-        nextIndex += 1;
-        if (currentIndex >= queue.length) {
-          return;
-        }
-
-        const entry = queue[currentIndex];
-        const fileId = getSegmentFileId(entry.segmentId, entry.file.path);
-        const hydratedFile = mergeFileDetails(
-          entry.file,
-          lazyFileDetailsRef.current[fileId]
-        );
-
-        if (!requiresFileDetails(hydratedFile)) {
-          continue;
-        }
-
-        try {
-          await ensureFileDetails(entry.segmentId, hydratedFile);
-        } catch {
-          continue;
-        }
-      }
-    }
-
-    const workerCount = Math.min(BACKGROUND_FILE_DETAIL_CONCURRENCY, queue.length);
-    void Promise.all(Array.from({ length: workerCount }, () => worker()));
-
-    return () => {
-      cancelled = true;
-    };
+    void ensureFileDetails(selectedSegment.id, selectedFile).catch(() => {});
   }, [
-    baseSegments,
     ensureFileDetails,
     loadFileDetails,
     selectedFileId,
-    selectedSegmentId,
-    shouldBackgroundPrefetchFileDetails,
-    sessionId,
+    selectedSegment,
+    shouldLoadSelectedFileDetails,
   ]);
 
   const markExportCopied = useCallback((actionId: string) => {
@@ -1963,7 +1864,7 @@ export function ReviewLayout({
                     const isExpanded = expandedFiles.has(fileId);
                     const commentCount = commentsValue.getCommentsForFile(fileId).length;
                     const isSelected = selectedFileId === fileId;
-                    const shouldPrioritizeDiff = isSelected || fileIndex < 2;
+                    const shouldPrioritizeDiff = isSelected || fileIndex === 0;
                     const isLargeDiff = diffRenderStats.isLargeDiff;
                     const isLargeDiffHidden =
                       isExpanded &&
@@ -2162,7 +2063,7 @@ export function ReviewLayout({
                         ) : isExpanded && (
                           <DeferredDiff
                             fileId={fileId}
-                            eagerOrder={fileIndex}
+                            estimatedHeight={diffRenderStats.diffLineCount * 24}
                             prioritize={shouldPrioritizeDiff}
                           >
                             <DiffView

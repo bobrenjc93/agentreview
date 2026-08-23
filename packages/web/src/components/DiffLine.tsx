@@ -1,6 +1,6 @@
 "use client";
 
-import { type PointerEvent } from "react";
+import { memo, type PointerEvent } from "react";
 import { type ParsedChange } from "@/lib/diff/parser";
 import { type ThemedToken } from "@/hooks/useHighlighter";
 import { type ReviewCommentSide } from "@/lib/comments/types";
@@ -24,7 +24,7 @@ interface DiffLineProps {
   onToggleFold?: () => void;
 }
 
-export function DiffLine({
+export const DiffLine = memo(function DiffLine({
   rowKey,
   change,
   content,
@@ -144,4 +144,4 @@ export function DiffLine({
       </span>
     </div>
   );
-}
+});
