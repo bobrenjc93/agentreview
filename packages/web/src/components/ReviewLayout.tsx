@@ -28,6 +28,7 @@ import {
 } from "@/lib/comments/types";
 import { type CancelAgent, type RunAgent } from "@/lib/comments/agent";
 import { AgentActivityBubble } from "./AgentActivityBubble";
+import { AgentMarkdown } from "./AgentMarkdown";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { generateExportPrompt } from "@/lib/export/prompt";
 import { generateExportDiff } from "@/lib/export/diff";
@@ -38,6 +39,7 @@ import {
 import { DiffView } from "./DiffView";
 import { InlineComment } from "./InlineComment";
 import { InlineCommentForm } from "./InlineCommentForm";
+import { SidebarFileTree } from "./SidebarFileTree";
 
 interface ReviewLayoutProps {
   payload: AgentReviewPayload;
@@ -60,6 +62,7 @@ interface SegmentContextMenuState {
 }
 
 type DiffViewMode = "unified" | "split";
+type CommitMessageViewMode = "plain" | "markdown";
 
 const STATUS_COLORS: Record<AgentReviewFile["status"], string> = {
   added: "text-green-400",
@@ -96,6 +99,7 @@ const SIDEBAR_SECTION_SPLITTER_HEIGHT = 12;
 const SIDEBAR_WIDTH_STORAGE_KEY = "agentreview:sidebarWidth";
 const SIDEBAR_SEGMENTS_HEIGHT_STORAGE_KEY = "agentreview:sidebarSegmentsHeight";
 const DIFF_VIEW_MODE_STORAGE_KEY = "agentreview:diffViewMode";
+const COMMIT_MESSAGE_VIEW_MODE_STORAGE_KEY = "agentreview:commitMessageViewMode";
 const EXPORT_COPY_RESET_MS = 1500;
 const ALL_COMMENTS_EXPORT_ID = "export-comments";
 const FULL_DIFF_EXPORT_ID = "export-diff";
@@ -293,6 +297,12 @@ function clampSidebarWidth(width: number): number {
 
 function isDiffViewMode(value: string | null): value is DiffViewMode {
   return value === "unified" || value === "split";
+}
+
+function isCommitMessageViewMode(
+  value: string | null
+): value is CommitMessageViewMode {
+  return value === "plain" || value === "markdown";
 }
 
 function mergeFileDetails(
@@ -515,6 +525,8 @@ export function ReviewLayout({
   );
   const [isResizingSidebarSections, setIsResizingSidebarSections] = useState(false);
   const [diffViewMode, setDiffViewMode] = useState<DiffViewMode>("unified");
+  const [commitMessageViewMode, setCommitMessageViewMode] =
+    useState<CommitMessageViewMode>("plain");
   const [preferencesLoaded, setPreferencesLoaded] = useState(false);
   const [expandedFiles, setExpandedFiles] = useState<Set<string>>(
     () => new Set(getAllFileIds(segments))
@@ -613,6 +625,13 @@ export function ReviewLayout({
       setDiffViewMode(savedDiffViewMode);
     }
 
+    const savedCommitMessageViewMode = window.localStorage.getItem(
+      COMMIT_MESSAGE_VIEW_MODE_STORAGE_KEY
+    );
+    if (isCommitMessageViewMode(savedCommitMessageViewMode)) {
+      setCommitMessageViewMode(savedCommitMessageViewMode);
+    }
+
     setPreferencesLoaded(true);
   }, [clampSegmentsPaneHeight]);
 
@@ -636,6 +655,14 @@ export function ReviewLayout({
     if (!preferencesLoaded || typeof window === "undefined") return;
     window.localStorage.setItem(DIFF_VIEW_MODE_STORAGE_KEY, diffViewMode);
   }, [preferencesLoaded, diffViewMode]);
+
+  useEffect(() => {
+    if (!preferencesLoaded || typeof window === "undefined") return;
+    window.localStorage.setItem(
+      COMMIT_MESSAGE_VIEW_MODE_STORAGE_KEY,
+      commitMessageViewMode
+    );
+  }, [commitMessageViewMode, preferencesLoaded]);
 
   useEffect(() => {
     expandedFilesRef.current = expandedFiles;
@@ -1754,35 +1781,20 @@ export function ReviewLayout({
                       Files
                     </p>
                     {selectedSegment && selectedSegment.files.length > 0 ? (
-                      <div className="mt-3 flex min-h-0 flex-col gap-1.5 overflow-y-auto pr-1">
-                        {selectedSegment.files.map((file) => {
-                          const fileId = getSegmentFileId(selectedSegment.id, file.path);
-                          const commentCount = commentsValue.getCommentsForFile(fileId).length;
-                          const isSelected = selectedFileId === fileId;
-                          return (
-                            <button
-                              key={fileId}
-                              id={getFileNavId(fileId)}
-                              type="button"
-                              onClick={() => selectFile(fileId)}
-                              className={`flex items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors ${
-                                isSelected
-                                  ? "bg-gray-800 text-white"
-                                  : "text-gray-300 hover:bg-gray-900"
-                              }`}
-                            >
-                              <span className={`font-mono text-xs font-bold ${STATUS_COLORS[file.status]}`}>
-                                {STATUS_LABELS[file.status]}
-                              </span>
-                              {renderFilePath(file.path, "block truncate font-mono")}
-                              {commentCount > 0 && (
-                                <span className="min-w-[1.25rem] rounded-full bg-blue-600 px-1.5 py-0.5 text-center text-xs text-white">
-                                  {commentCount}
-                                </span>
-                              )}
-                            </button>
-                          );
-                        })}
+                      <div className="mt-3 min-h-0 overflow-y-auto pr-1">
+                        <SidebarFileTree
+                          key={selectedSegment.id}
+                          files={selectedSegment.files}
+                          selectedFileId={selectedFileId}
+                          getFileId={(file) =>
+                            getSegmentFileId(selectedSegment.id, file.path)
+                          }
+                          getCommentCount={(fileId) =>
+                            commentsValue.getCommentsForFile(fileId).length
+                          }
+                          getFileNavId={getFileNavId}
+                          onSelectFile={selectFile}
+                        />
                       </div>
                     ) : (
                       <p className="mt-3 text-sm text-gray-500">No files in this segment.</p>
@@ -1890,9 +1902,49 @@ export function ReviewLayout({
                           {getSegmentPanelSubtitle(selectedSegment)}
                         </p>
                         {selectedSegment.kind === "commit" && selectedSegment.commitMessage && (
-                          <pre className="mt-3 whitespace-pre-wrap break-words font-sans text-sm leading-6 text-gray-300">
-                            {selectedSegment.commitMessage}
-                          </pre>
+                          <div className="mt-3">
+                            <div className="mb-2 flex items-center justify-between gap-3">
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">
+                                Commit message
+                              </p>
+                              <div
+                                className="inline-flex rounded-md border border-gray-700 bg-gray-900/80 p-0.5"
+                                aria-label="Commit message view"
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => setCommitMessageViewMode("plain")}
+                                  className={`rounded px-2 py-1 text-[11px] font-medium transition-colors ${
+                                    commitMessageViewMode === "plain"
+                                      ? "bg-gray-700 text-white"
+                                      : "text-gray-400 hover:text-white"
+                                  }`}
+                                  aria-pressed={commitMessageViewMode === "plain"}
+                                >
+                                  Plain
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setCommitMessageViewMode("markdown")}
+                                  className={`rounded px-2 py-1 text-[11px] font-medium transition-colors ${
+                                    commitMessageViewMode === "markdown"
+                                      ? "bg-cyan-500/15 text-cyan-100"
+                                      : "text-gray-400 hover:text-white"
+                                  }`}
+                                  aria-pressed={commitMessageViewMode === "markdown"}
+                                >
+                                  Markdown
+                                </button>
+                              </div>
+                            </div>
+                            {commitMessageViewMode === "markdown" ? (
+                              <AgentMarkdown text={selectedSegment.commitMessage} />
+                            ) : (
+                              <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-6 text-gray-300">
+                                {selectedSegment.commitMessage}
+                              </pre>
+                            )}
+                          </div>
                         )}
                       </div>
                       <div className="flex items-center gap-2 text-xs text-gray-500">
