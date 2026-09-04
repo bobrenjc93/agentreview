@@ -79,6 +79,10 @@ const STATUS_LABELS: Record<AgentReviewFile["status"], string> = {
 
 const HOTKEYS: Array<{ key: string; description: string }> = [
   { key: "?", description: "Show or hide this hotkeys panel" },
+  {
+    key: "← / →",
+    description: "Go to the previous or next comment in this commit",
+  },
   { key: "E", description: "Expand or collapse files in the current segment" },
   { key: "D", description: "Copy export diff to the clipboard" },
   { key: "C", description: "Copy export comments to the clipboard (when comments exist)" },
@@ -470,6 +474,7 @@ export function ReviewLayout({
   const [isSwitchingSegment, startSegmentTransition] = useTransition();
   const commentsValue = useCommentsProvider(sessionId, runAgent, cancelAgent);
   const commentsCount = commentsValue.comments.length;
+  const activeCommentIdBySegmentRef = useRef<Map<string, string>>(new Map());
   const exportCopyResetTimersRef = useRef<Map<string, number>>(new Map());
 
   useEffect(() => {
@@ -1053,6 +1058,9 @@ export function ReviewLayout({
       commentsValue.setAgentExpanded(comment.id, true);
 
       const targetSegmentId = getCommentSegmentId(comment.segmentId);
+      if (targetSegmentId) {
+        activeCommentIdBySegmentRef.current.set(targetSegmentId, comment.id);
+      }
       if (targetSegmentId && targetSegmentId !== selectedSegmentId) {
         selectSegment(targetSegmentId);
       }
@@ -1074,6 +1082,43 @@ export function ReviewLayout({
       selectSegment,
       selectedSegmentId,
       setFilePathExpanded,
+    ]
+  );
+
+  const navigateRelativeComment = useCallback(
+    (direction: -1 | 1): boolean => {
+      if (!selectedSegment) return false;
+
+      const segmentComments = commentsValue.comments.filter(
+        (comment) =>
+          getCommentSegmentId(comment.segmentId) === selectedSegment.id
+      );
+      if (segmentComments.length === 0) return false;
+
+      const activeCommentId = activeCommentIdBySegmentRef.current.get(
+        selectedSegment.id
+      );
+      const activeIndex = segmentComments.findIndex(
+        (comment) => comment.id === activeCommentId
+      );
+      const nextIndex =
+        activeIndex === -1
+          ? direction === 1
+            ? 0
+            : segmentComments.length - 1
+          : (activeIndex + direction + segmentComments.length) %
+            segmentComments.length;
+      const nextComment = segmentComments[nextIndex];
+      if (!nextComment) return false;
+
+      navigateToComment(nextComment);
+      return true;
+    },
+    [
+      commentsValue.comments,
+      getCommentSegmentId,
+      navigateToComment,
+      selectedSegment,
     ]
   );
 
@@ -1352,6 +1397,7 @@ export function ReviewLayout({
 
       if (isTypingTarget(event.target)) return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (event.defaultPrevented) return;
 
       if (event.key === "?") {
         event.preventDefault();
@@ -1360,6 +1406,16 @@ export function ReviewLayout({
       }
 
       if (hasBlockingOverlay || openCopyMenuId || segmentContextMenu) return;
+
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        const didNavigate = navigateRelativeComment(
+          event.key === "ArrowRight" ? 1 : -1
+        );
+        if (didNavigate) {
+          event.preventDefault();
+        }
+        return;
+      }
 
       switch (event.key.toLowerCase()) {
         case "e":
@@ -1401,6 +1457,7 @@ export function ReviewLayout({
     commentsCount,
     copyAllComments,
     copyFullDiff,
+    navigateRelativeComment,
     router,
   ]);
 

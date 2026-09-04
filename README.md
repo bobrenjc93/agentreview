@@ -105,6 +105,7 @@ The web interface is available at [agentreview-web.vercel.app](https://agentrevi
 | Key | Action |
 |---|---|
 | `?` | Show shortcut help |
+| `←` / `→` | Go to the previous / next comment in the current commit |
 | `E` | Expand all files |
 | `D` | Copy full diff |
 | `C` | Copy comments |
